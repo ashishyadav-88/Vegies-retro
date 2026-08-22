@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profiles and customer records for Vegies Restro",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique user identifier from Auth" },
+        "email": { "type": "string", "description": "Customer email address" },
+        "displayName": { "type": "string", "description": "Customer full name" },
+        "phoneNumber": { "type": "string", "description": "Contact phone number" },
+        "role": { "type": "string", "enum": ["admin", "customer"], "description": "Access role" },
+        "createdAt": { "type": "string", "description": "Account registration timestamp" },
+        "updatedAt": { "type": "string", "description": "Last profile update timestamp" },
+        "lastLoginAt": { "type": "string", "description": "Last active session timestamp" }
+      },
+      "required": ["uid", "email", "displayName", "createdAt"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Table reservation and parcel order inquiries for Vegies Restro",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Customer UID or guest identifier" },
+        "userName": { "type": "string", "description": "Customer name" },
+        "userPhone": { "type": "string", "description": "Customer contact number" },
+        "userEmail": { "type": "string", "description": "Customer email address" },
+        "serviceType": { "type": "string", "description": "Category of dining service" },
+        "guests": { "type": "string", "description": "Number of guests or party size" },
+        "timeSlot": { "type": "string", "description": "Selected meal time window" },
+        "customDish": { "type": "string", "description": "Custom dishes or ordered items" },
+        "notes": { "type": "string", "description": "Special dietary or seating instructions" },
+        "referenceId": { "type": "string", "description": "Unique booking reference code" },
+        "status": { "type": "string", "enum": ["Pending", "Confirmed", "Completed", "Cancelled"] },
+        "createdAt": { "type": "string", "description": "ISO timestamp of submission" }
+      },
+      "required": ["userName", "userPhone", "serviceType", "timeSlot", "status", "referenceId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Registered user and customer profiles"
+    },
+    "/bookings/{bookingId}": {
+      "schema": "Booking",
+      "description": "Public and user reservations for restaurant management"
+    }
+  }
+}

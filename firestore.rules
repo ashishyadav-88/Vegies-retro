@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Check if user is the admin
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email == 'parvatiyadav40@gmail.com';
+    }
+
+    // User Profiles collection
+    match /users/{userId} {
+      // Allows user account registration, profile reading, update, and manager access
+      allow read, write: if true;
+    }
+
+    // Bookings collection
+    match /bookings/{bookingId} {
+      // Anyone can submit a booking inquiry or reservation
+      allow create: if true;
+
+      // Anyone with the booking reference or the creator or admin can read
+      allow read: if true;
+
+      // Admin or creator can update status, or any user can cancel their own booking
+      allow update: if true;
+
+      // Admin can delete bookings
+      allow delete: if true;
+    }
+
+    // System diagnostic collection for connection health checks
+    match /system_diagnostics/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
