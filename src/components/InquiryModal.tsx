@@ -110,16 +110,16 @@ export const InquiryModal: React.FC<InquiryModalProps> = ({
 
       // 3. Prepare WhatsApp Message
       const messageText =
-        `Hello Vegies Restro!\n\n` +
-        `*New Booking Inquiry (#${savedBooking.referenceId})*\n` +
-        `• Name: ${name}\n` +
-        `• Phone: ${phone}\n` +
-        `• Requirement: ${serviceType}\n` +
-        `• Seating/Quantity: ${guests}\n` +
-        `• Preferred Time: ${timeSlot}\n` +
-        (customDish ? `• Selected Dish/Item: ${customDish}\n` : '') +
-        (notes ? `• Special Notes: ${notes}\n` : '') +
-        `\nBooking stored in Vegies Restro account. Please confirm table/order availability. Thank you!`;
+        `Hello Vegies Restro 😊\n\n` +
+        `🍽️ New Booking Inquiry (#${savedBooking.referenceId})\n\n` +
+        `👤 Name: ${name}\n` +
+        `📞 Phone: ${phone}\n` +
+        `🏷️ Service: ${serviceType}\n` +
+        `👥 Guests: ${guests}\n` +
+        `⏰ Time: ${timeSlot}\n` +
+        (customDish ? `🍲 Selected Dish: ${customDish}\n` : '') +
+        (notes ? `📝 Note: ${notes}\n` : '') +
+        `\nPlease confirm table/order availability. Thank you! 🙏🥗`;
 
       // Optional auto-open WhatsApp
       setTimeout(() => {
@@ -270,13 +270,15 @@ export const InquiryModal: React.FC<InquiryModalProps> = ({
 
                 <button
                   type="button"
+                  id="inquiry-modal-done-refresh-btn"
                   onClick={() => {
                     setSubmittedBooking(null);
                     onClose();
+                    window.location.reload();
                   }}
-                  className="text-xs text-stone-500 hover:text-stone-800 font-semibold pt-1 cursor-pointer"
+                  className="w-full py-2.5 rounded-xl border border-stone-300 hover:bg-stone-100 text-stone-700 font-bold text-xs transition-colors cursor-pointer"
                 >
-                  Done
+                  Done & Refresh Page
                 </button>
               </div>
             </div>

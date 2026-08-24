@@ -375,6 +375,11 @@ export const subscribeToUserBookings = (
  */
 export const cancelUserBooking = async (bookingId: string, userId?: string) => {
   if (userId) {
+    const userBookings = getLocalBookings(userId);
+    const existing = userBookings.find((b) => b.id === bookingId || b.referenceId === bookingId);
+    if (existing && existing.status === 'Completed') {
+      throw new Error('Completed bookings cannot be cancelled.');
+    }
     updateLocalBookingStatus(userId, bookingId, 'Cancelled');
   }
 
@@ -482,9 +487,21 @@ export const subscribeToAllBookingsAdmin = (
  */
 export const updateBookingStatusAdmin = async (
   bookingId: string,
-  newStatus: BookingInquiry['status'],
+  newStatus?: BookingInquiry['status'],
   additionalNotes?: string
 ) => {
+  // Check if booking is already Completed
+  const master = getAdminMasterBookings();
+  const current = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
+  if (
+    current &&
+    current.status === 'Completed' &&
+    newStatus !== undefined &&
+    newStatus !== 'Completed'
+  ) {
+    throw new Error('Once a booking is marked as Completed, its status is finalized and cannot be changed.');
+  }
+
   // Update local master store
   updateAdminMasterBooking(bookingId, {
     status: newStatus,
@@ -496,9 +513,11 @@ export const updateBookingStatusAdmin = async (
     try {
       const bRef = doc(db, 'bookings', bookingId);
       const updatePayload: Record<string, any> = {
-        status: newStatus,
         updatedAt: new Date().toISOString(),
       };
+      if (newStatus !== undefined) {
+        updatePayload.status = newStatus;
+      }
       if (additionalNotes !== undefined) {
         updatePayload.notes = additionalNotes;
       }

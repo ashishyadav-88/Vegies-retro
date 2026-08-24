@@ -6,18 +6,11 @@ import {
   Phone,
   Clock,
   Navigation,
-  Heart,
   MessageCircle,
-  Utensils,
   ArrowUp,
-  ShieldCheck,
 } from 'lucide-react';
 
-interface FooterProps {
-  onOpenAdminPortal?: () => void;
-}
-
-export const Footer: React.FC<FooterProps> = ({ onOpenAdminPortal }) => {
+export const Footer: React.FC = () => {
   const scrollToTop = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -71,18 +64,6 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAdminPortal }) => {
                 <Navigation className="w-3.5 h-3.5 text-amber-400" />
                 <span>Directions</span>
               </a>
-
-              {onOpenAdminPortal && (
-                <button
-                  type="button"
-                  onClick={onOpenAdminPortal}
-                  id="footer-admin-portal-btn"
-                  className="px-3.5 py-2 rounded-xl bg-stone-900 hover:bg-amber-950/60 text-amber-300 text-xs font-bold border border-amber-500/40 flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Admin Portal</span>
-                </button>
-              )}
             </div>
           </div>
 
@@ -172,18 +153,6 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAdminPortal }) => {
 
           <div className="flex items-center gap-3">
             <span>Made with passion in Nalasopara East</span>
-            {onOpenAdminPortal && (
-              <>
-                <span>•</span>
-                <button
-                  type="button"
-                  onClick={onOpenAdminPortal}
-                  className="text-amber-400 hover:underline cursor-pointer"
-                >
-                  Admin Access
-                </button>
-              </>
-            )}
           </div>
 
           {/* Back to top button */}

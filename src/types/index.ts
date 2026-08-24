@@ -90,7 +90,7 @@ export interface BookingInquiry {
   timeSlot: string;
   customDish?: string;
   notes?: string;
-  status: 'Pending' | 'Confirmed' | 'Completed' | 'Cancelled';
+  status: 'Pending' | 'Confirmed' | 'Preparing' | 'Out for Delivery' | 'Delivered' | 'Completed' | 'Cancelled';
   createdAt: string;
   referenceId: string;
 }

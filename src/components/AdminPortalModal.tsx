@@ -14,6 +14,10 @@ import {
   subscribeToAllUsers,
   syncAllLocalUsersToFirestore,
 } from '../services/userService';
+import {
+  formatStatusWhatsAppMessage,
+  sendWhatsAppDirectInBackground,
+} from '../services/whatsappService';
 import { RESTAURANT_INFO } from '../data/restaurantData';
 import { BookingInquiry, UserProfile } from '../types';
 import { WhatsAppIcon } from './Navbar';
@@ -51,6 +55,18 @@ import {
   Copy,
   ExternalLink,
   UploadCloud,
+  Send,
+  BellRing,
+  ShoppingBag,
+  ChefHat,
+  Bike,
+  MapPin,
+  Receipt,
+  Navigation,
+  DollarSign,
+  CheckSquare,
+  Package,
+  Clock3,
 } from 'lucide-react';
 
 interface AdminPortalModalProps {
@@ -58,23 +74,78 @@ interface AdminPortalModalProps {
   onClose: () => void;
 }
 
+export interface WhatsAppAlertInfo {
+  bookingId: string;
+  referenceId: string;
+  customerName: string;
+  customerPhone: string;
+  newStatus: BookingInquiry['status'];
+  messageText: string;
+  dispatched: boolean;
+  timestamp: number;
+}
+
+/**
+ * Open WhatsApp directly with sanitized Indian/international phone number
+ */
+export const openWhatsAppDirect = (phone: string, text: string): boolean => {
+  const cleanPhone = phone.replace(/\D/g, '');
+  if (!cleanPhone) {
+    return false;
+  }
+  // Sanitize 10-digit Indian numbers, 11-digit numbers with 0 prefix, or 12-digit with 91
+  const phoneWithCountry =
+    cleanPhone.startsWith('91') && cleanPhone.length === 12
+      ? cleanPhone
+      : cleanPhone.length === 10
+      ? `91${cleanPhone}`
+      : cleanPhone.startsWith('0') && cleanPhone.length === 11
+      ? `91${cleanPhone.slice(1)}`
+      : cleanPhone;
+
+  const url = `https://api.whatsapp.com/send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`;
+  
+  try {
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!win || win.closed || typeof win.closed === 'undefined') {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  } catch (err) {
+    console.error('Error launching WhatsApp:', err);
+    window.location.href = url;
+  }
+  return true;
+};
+
 export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onClose }) => {
   const { user, userProfile, isAdmin, signInAdminDirect, logout } = useAuth();
 
-  // Login form states for unauthenticated admin
-  const [emailInput, setEmailInput] = useState(ADMIN_EMAIL);
-  const [passwordInput, setPasswordInput] = useState('parvatiy88');
+  // Login form states for unauthenticated admin (empty by default for strict security)
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Admin Dashboard views & data
-  const [activeTab, setActiveTab] = useState<'bookings' | 'users' | 'add-booking' | 'cloud-status' | 'metrics'>('bookings');
+  const [activeTab, setActiveTab] = useState<'orders' | 'bookings' | 'all-inquiries' | 'users' | 'add-booking' | 'cloud-status' | 'metrics'>('orders');
   const [bookings, setBookings] = useState<BookingInquiry[]>([]);
   const [isLoadingBookings, setIsLoadingBookings] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [serviceFilter, setServiceFilter] = useState<string>('all');
+
+  // Food Orders Dedicated State
+  const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
+  const [orderTypeFilter, setOrderTypeFilter] = useState<string>('all');
+  const [copiedKOTId, setCopiedKOTId] = useState<string | null>(null);
 
   // Users & Customer state
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
@@ -94,6 +165,11 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onCl
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [tempNotes, setTempNotes] = useState('');
 
+  // WhatsApp Automation Settings & Alert State
+  const [autoWhatsAppOnStatus, setAutoWhatsAppOnStatus] = useState<boolean>(true);
+  const [lastWhatsAppAlert, setLastWhatsAppAlert] = useState<WhatsAppAlertInfo | null>(null);
+  const [copiedAlertMsg, setCopiedAlertMsg] = useState<boolean>(false);
+
   // Add Booking Form States (Admin end)
   const [newCustName, setNewCustName] = useState('');
   const [newCustPhone, setNewCustPhone] = useState('');
@@ -104,6 +180,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onCl
   const [newCustomDish, setNewCustomDish] = useState('');
   const [newNotes, setNewNotes] = useState('');
   const [newStatus, setNewStatus] = useState<BookingInquiry['status']>('Confirmed');
+  const [sendWhatsAppOnCreate, setSendWhatsAppOnCreate] = useState<boolean>(true);
   const [isCreatingBooking, setIsCreatingBooking] = useState(false);
   const [createSuccessMsg, setCreateSuccessMsg] = useState<string | null>(null);
 
@@ -198,51 +275,100 @@ service cloud.firestore {
 
   if (!isOpen) return null;
 
-  // Handle Admin Direct Sign In
+  // Handle Admin Direct Sign In (Requires genuine matching admin credentials)
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
+
+    const cleanEmail = emailInput.trim().toLowerCase();
+    if (!cleanEmail || !passwordInput) {
+      setLoginError('Please enter both your administrator email and password.');
+      return;
+    }
+
+    if (cleanEmail !== ADMIN_EMAIL.toLowerCase()) {
+      setLoginError(`Access denied. '${cleanEmail}' is not recognized as the authorized restaurant administrator.`);
+      return;
+    }
+
     setIsLoggingIn(true);
 
     try {
-      if (emailInput.trim().toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-        throw new Error(`Unauthorized. Only administrator (${ADMIN_EMAIL}) can access this portal.`);
-      }
       await signInAdminDirect(passwordInput);
+      // Clear password input once authenticated
+      setPasswordInput('');
     } catch (err: any) {
       console.error('Admin login error:', err);
-      setLoginError(err.message || 'Invalid credentials. Please verify your admin password.');
+      const msg =
+        err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'
+          ? 'Invalid password. Please enter the correct admin password.'
+          : err.message || 'Invalid credentials. Please verify your admin password.';
+      setLoginError(msg);
     } finally {
       setIsLoggingIn(false);
     }
   };
 
-  // Quick 1-click Fill & Login
-  const handleQuickAdminLogin = async () => {
-    setEmailInput(ADMIN_EMAIL);
-    setPasswordInput('parvatiy88');
-    setLoginError(null);
-    setIsLoggingIn(true);
-    try {
-      await signInAdminDirect('parvatiy88');
-    } catch (err: any) {
-      setLoginError(err.message || 'Login failed. Please check credentials.');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  // Status Change Handler
+  // Status Change Handler with Instant Direct WhatsApp Messaging
   const handleStatusChange = async (
     bookingId: string,
     newSt: BookingInquiry['status'],
+    bookingItem?: BookingInquiry,
     customMsg?: string
   ) => {
+    // Find the corresponding booking if not passed directly
+    const targetBooking =
+      bookingItem ||
+      bookings.find((b) => b.id === bookingId || b.referenceId === bookingId);
+
+    // Rule: Once status is marked as completed, it cannot be changed
+    if (targetBooking && targetBooking.status === 'Completed' && newSt !== 'Completed') {
+      return;
+    }
+
+    // Rule: Once a status is set, it cannot be clicked again for the same status
+    if (targetBooking && targetBooking.status === newSt) {
+      return;
+    }
+
+    // 1. Prepare message and trigger instant WhatsApp chat immediately upon user click
+    let generatedMessage = '';
+    if (targetBooking) {
+      generatedMessage = formatStatusWhatsAppMessage(
+        targetBooking,
+        newSt,
+        customMsg || targetBooking.notes
+      );
+
+      if (autoWhatsAppOnStatus && targetBooking.userPhone) {
+        openWhatsAppDirect(targetBooking.userPhone, generatedMessage);
+      }
+    }
+
     setActionLoadingId(bookingId);
     try {
+      // 2. Update status in database & local storage
       await updateBookingStatusAdmin(bookingId, newSt);
-      if (customMsg) {
-        // Optional quick notify
+
+      if (targetBooking) {
+        // 3. Log dispatch record and call webhook/API if configured
+        const dispatchRecord = await sendWhatsAppDirectInBackground(
+          targetBooking,
+          newSt,
+          customMsg || targetBooking.notes
+        );
+
+        // 4. Set confirmation alert banner for administrative visibility
+        setLastWhatsAppAlert({
+          bookingId: targetBooking.id || targetBooking.referenceId,
+          referenceId: targetBooking.referenceId,
+          customerName: targetBooking.userName || 'Customer',
+          customerPhone: targetBooking.userPhone || '',
+          newStatus: newSt,
+          messageText: generatedMessage || dispatchRecord.messageText,
+          dispatched: true,
+          timestamp: Date.now(),
+        });
       }
     } catch (e) {
       console.error('Status update failed:', e);
@@ -266,14 +392,12 @@ service cloud.firestore {
 
   // Delete Booking Handler
   const handleDeleteBooking = async (booking: BookingInquiry) => {
-    const confirmDelete = window.confirm(
-      `Delete booking #${booking.referenceId} for ${booking.userName}? This action cannot be undone.`
-    );
-    if (!confirmDelete) return;
-
     setActionLoadingId(booking.id || booking.referenceId);
     try {
       await deleteBookingAdmin(booking.id || booking.referenceId);
+      if (lastWhatsAppAlert?.referenceId === booking.referenceId) {
+        setLastWhatsAppAlert(null);
+      }
     } catch (e) {
       console.error('Delete error:', e);
     } finally {
@@ -281,28 +405,26 @@ service cloud.firestore {
     }
   };
 
-  // WhatsApp Confirmation Dispatcher from Admin
-  const sendWhatsAppUpdate = (booking: BookingInquiry, customStatus?: string) => {
+  // WhatsApp Dispatcher from Admin (Direct instant delivery)
+  const sendWhatsAppUpdate = async (booking: BookingInquiry, customStatus?: BookingInquiry['status']) => {
     const statusText = customStatus || booking.status;
-    let text = `Hello ${booking.userName}!\n\n`;
-    text += `Update from *Vegies Restro* regarding your booking (Ref: *#${booking.referenceId}*):\n`;
-    text += `• Status: *${statusText}*\n`;
-    text += `• Service: ${booking.serviceType}\n`;
-    text += `• Time: ${booking.timeSlot}\n`;
-    text += `• Party / Guests: ${booking.guests}\n`;
-    if (booking.customDish) {
-      text += `• Dish: ${booking.customDish}\n`;
-    }
-    if (statusText === 'Confirmed') {
-      text += `\nYour table/order is *CONFIRMED*! We look forward to serving you delicious pure veg delicacies.\n`;
-    } else if (statusText === 'Completed') {
-      text += `\nThank you for dining with Vegies Restro! We hope you enjoyed the food.\n`;
-    }
-    text += `\nAddress: Santosh Bhuvan, Nalasopara East\nPhone: +91 ${RESTAURANT_INFO.phone}`;
+    const message = formatStatusWhatsAppMessage(booking, statusText, booking.notes);
+    
+    // Launch chat directly
+    openWhatsAppDirect(booking.userPhone, message);
 
-    const cleanPhone = booking.userPhone.replace(/\D/g, '');
-    const phoneWithCountry = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
-    window.open(`https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(text)}`, '_blank');
+    const dispatchRecord = await sendWhatsAppDirectInBackground(booking, statusText, booking.notes);
+
+    setLastWhatsAppAlert({
+      bookingId: booking.id || booking.referenceId,
+      referenceId: booking.referenceId,
+      customerName: booking.userName || 'Customer',
+      customerPhone: booking.userPhone,
+      newStatus: statusText,
+      messageText: message || dispatchRecord.messageText,
+      dispatched: true,
+      timestamp: Date.now(),
+    });
   };
 
   // Submit New Booking from Admin Portal
@@ -326,8 +448,15 @@ service cloud.firestore {
         status: newStatus,
       });
 
+      // Dispatch WhatsApp message instantly
+      if (sendWhatsAppOnCreate && created.userPhone) {
+        const msg = formatStatusWhatsAppMessage(created, newStatus, created.notes);
+        openWhatsAppDirect(created.userPhone, msg);
+        await sendWhatsAppDirectInBackground(created, newStatus, created.notes);
+      }
+
       setCreateSuccessMsg(
-        `Booking #${created.referenceId} for ${created.userName} created and stored successfully!`
+        `Booking #${created.referenceId} for ${created.userName} registered and status set to ${newStatus}! WhatsApp update triggered.`
       );
 
       // Reset form
@@ -341,7 +470,7 @@ service cloud.firestore {
       setTimeout(() => {
         setActiveTab('bookings');
         setCreateSuccessMsg(null);
-      }, 1500);
+      }, 1800);
     } catch (err: any) {
       alert(`Error creating booking: ${err.message}`);
     } finally {
@@ -349,8 +478,96 @@ service cloud.firestore {
     }
   };
 
-  // Filtered Bookings List
-  const filteredBookings = bookings.filter((b) => {
+  const isFoodOrder = (b: BookingInquiry) => {
+    const st = (b.serviceType || '').toLowerCase();
+    return (
+      st.includes('food') ||
+      st.includes('delivery') ||
+      st.includes('takeaway') ||
+      st.includes('parcel') ||
+      st.includes('order')
+    );
+  };
+
+  // Helper to extract Address from notes
+  const extractDeliveryAddress = (notes?: string) => {
+    if (!notes) return null;
+    const match = notes.match(/Delivery Address:\s*([^|]+)/i);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+    if (
+      notes.toLowerCase().includes('address') ||
+      notes.toLowerCase().includes('flat') ||
+      notes.toLowerCase().includes('room') ||
+      notes.toLowerCase().includes('bldg') ||
+      notes.toLowerCase().includes('road') ||
+      notes.toLowerCase().includes('nagar')
+    ) {
+      const parts = notes.split('|');
+      return parts[0].replace(/delivery address:/i, '').trim();
+    }
+    return null;
+  };
+
+  // Helper to extract cooking notes / instructions
+  const extractCookingNotes = (notes?: string) => {
+    if (!notes) return null;
+    const parts = notes.split('|');
+    const filtered = parts.filter((p) => !p.toLowerCase().includes('delivery address:'));
+    if (filtered.length > 0) {
+      return filtered.join(' | ').trim();
+    }
+    return null;
+  };
+
+  // Separate Lists
+  const foodOrders = bookings.filter(isFoodOrder);
+  const tableBookings = bookings.filter((b) => !isFoodOrder(b));
+
+  // Filtered Food Orders
+  const filteredFoodOrders = foodOrders.filter((b) => {
+    const matchesSearch =
+      b.userName.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+      b.userPhone.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+      b.referenceId.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+      (b.customDish && b.customDish.toLowerCase().includes(orderSearchQuery.toLowerCase())) ||
+      (b.notes && b.notes.toLowerCase().includes(orderSearchQuery.toLowerCase()));
+
+    const matchesStatus =
+      orderStatusFilter === 'all'
+        ? true
+        : orderStatusFilter === 'Delivered'
+        ? b.status === 'Delivered' || b.status === 'Completed'
+        : b.status.toLowerCase() === orderStatusFilter.toLowerCase();
+
+    const matchesType =
+      orderTypeFilter === 'all'
+        ? true
+        : orderTypeFilter === 'delivery'
+        ? b.serviceType.toLowerCase().includes('delivery')
+        : b.serviceType.toLowerCase().includes('takeaway') || b.serviceType.toLowerCase().includes('parcel');
+
+    return matchesSearch && matchesStatus && matchesType;
+  });
+
+  // Filtered Table Bookings List
+  const filteredTableBookings = tableBookings.filter((b) => {
+    const matchesSearch =
+      b.userName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.userPhone.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.referenceId.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (b.customDish && b.customDish.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (b.notes && b.notes.toLowerCase().includes(searchQuery.toLowerCase()));
+
+    const matchesStatus =
+      statusFilter === 'all' ? true : b.status.toLowerCase() === statusFilter.toLowerCase();
+
+    return matchesSearch && matchesStatus;
+  });
+
+  // Filtered All Inquiries List
+  const filteredAllInquiries = bookings.filter((b) => {
     const matchesSearch =
       b.userName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       b.userPhone.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -369,12 +586,80 @@ service cloud.firestore {
     return matchesSearch && matchesStatus && matchesService;
   });
 
-  // Calculate Metrics
+  // Calculate Order Specific Metrics
+  const orderTotalCount = foodOrders.length;
+  const orderPendingCount = foodOrders.filter((b) => b.status === 'Pending').length;
+  const orderConfirmedCount = foodOrders.filter((b) => b.status === 'Confirmed').length;
+  const orderPreparingCount = foodOrders.filter((b) => b.status === 'Preparing').length;
+  const orderOutForDeliveryCount = foodOrders.filter((b) => b.status === 'Out for Delivery').length;
+  const orderDeliveredCount = foodOrders.filter((b) => b.status === 'Delivered' || b.status === 'Completed').length;
+  const orderCancelledCount = foodOrders.filter((b) => b.status === 'Cancelled').length;
+
+  // Calculate Total Order Revenue (Sum of valid orders)
+  const orderRevenue = foodOrders
+    .filter((b) => b.status !== 'Cancelled')
+    .reduce((sum, b) => {
+      const match = (b.guests || '').match(/\d+/g);
+      if (match) {
+        const val = parseInt(match.join(''), 10);
+        return sum + (isNaN(val) ? 0 : val);
+      }
+      return sum;
+    }, 0);
+
+  // Table Bookings Metrics
+  const tableTotalCount = tableBookings.length;
+  const tablePendingCount = tableBookings.filter((b) => b.status === 'Pending').length;
+  const tableConfirmedCount = tableBookings.filter((b) => b.status === 'Confirmed').length;
+  const tableCompletedCount = tableBookings.filter((b) => b.status === 'Completed').length;
+  const tableCancelledCount = tableBookings.filter((b) => b.status === 'Cancelled').length;
+
+  // Calculate Metrics (Total Inquiries)
   const totalCount = bookings.length;
   const pendingCount = bookings.filter((b) => b.status === 'Pending').length;
   const confirmedCount = bookings.filter((b) => b.status === 'Confirmed').length;
-  const completedCount = bookings.filter((b) => b.status === 'Completed').length;
+  const completedCount = bookings.filter((b) => b.status === 'Completed' || b.status === 'Delivered').length;
   const cancelledCount = bookings.filter((b) => b.status === 'Cancelled').length;
+
+  // Kitchen Order Ticket (KOT) generator & copy
+  const handleCopyKOT = (order: BookingInquiry) => {
+    const address = extractDeliveryAddress(order.notes);
+    const cookingNotes = extractCookingNotes(order.notes);
+    const isTakeaway = order.serviceType.toLowerCase().includes('takeaway');
+
+    let kot = `=====================================\n`;
+    kot += `  VEGIES RESTRO - KITCHEN ORDER TICKET\n`;
+    kot += `=====================================\n`;
+    kot += `Order Ref: #${order.referenceId}\n`;
+    kot += `Type: ${isTakeaway ? '🥡 TAKEAWAY (PARCEL)' : '🛵 HOME DELIVERY'}\n`;
+    kot += `Date/Time: ${new Date(order.createdAt).toLocaleString('en-IN', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    })}\n`;
+    kot += `Customer: ${order.userName} (${order.userPhone})\n`;
+    if (address && !isTakeaway) {
+      kot += `Delivery To: ${address}\n`;
+    }
+    kot += `-------------------------------------\n`;
+    kot += `ITEMS ORDERED:\n`;
+    if (order.customDish) {
+      kot += `${order.customDish}\n`;
+    } else {
+      kot += `Standard Meal / Custom Order\n`;
+    }
+    kot += `-------------------------------------\n`;
+    if (cookingNotes) {
+      kot += `SPECIAL INSTRUCTIONS: ${cookingNotes}\n`;
+      kot += `-------------------------------------\n`;
+    }
+    kot += `BILL TOTAL: ${order.guests || 'N/A'}\n`;
+    kot += `STATUS: ${order.status.toUpperCase()}\n`;
+    kot += `=====================================\n`;
+
+    navigator.clipboard.writeText(kot);
+    setCopiedKOTId(order.id || order.referenceId);
+    setTimeout(() => setCopiedKOTId(null), 2500);
+  };
 
   return (
     <div
@@ -471,7 +756,8 @@ service cloud.firestore {
                     required
                     value={emailInput}
                     onChange={(e) => setEmailInput(e.target.value)}
-                    placeholder="parvatiyadav40@gmail.com"
+                    placeholder="Enter admin email address"
+                    autoComplete="email"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
@@ -486,7 +772,8 @@ service cloud.firestore {
                       required
                       value={passwordInput}
                       onChange={(e) => setPasswordInput(e.target.value)}
-                      placeholder="••••••••"
+                      placeholder="Enter admin password"
+                      autoComplete="current-password"
                       className="w-full px-3.5 py-2.5 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 pr-10"
                     />
                     <button
@@ -499,7 +786,7 @@ service cloud.firestore {
                   </div>
                 </div>
 
-                <div className="pt-2 space-y-2">
+                <div className="pt-2">
                   <button
                     type="submit"
                     disabled={isLoggingIn}
@@ -513,16 +800,6 @@ service cloud.firestore {
                         <span>Sign In to Admin Portal</span>
                       </>
                     )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleQuickAdminLogin}
-                    disabled={isLoggingIn}
-                    className="w-full py-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Quick Admin Sign In ({ADMIN_EMAIL})</span>
                   </button>
                 </div>
               </form>
@@ -539,52 +816,164 @@ service cloud.firestore {
           <div className="flex-1 flex flex-col overflow-hidden bg-stone-50">
             {/* Top Navigation & KPI Summary */}
             <div className="p-4 sm:p-5 bg-white border-b border-stone-200 space-y-4 shrink-0">
-              {/* KPIs */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-                <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col">
-                  <span className="text-[11px] text-stone-500 font-semibold">Total Inquiries</span>
-                  <span className="text-xl font-extrabold text-stone-900">{totalCount}</span>
-                </div>
-
-                <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-amber-800 font-semibold">Pending Action</span>
-                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+              {/* KPIs dynamically adjusted by active tab */}
+              {activeTab === 'orders' ? (
+                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5">
+                  <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 flex flex-col">
+                    <span className="text-[11px] text-emerald-800 font-semibold flex items-center gap-1">
+                      <ShoppingBag className="w-3 h-3 text-emerald-600" />
+                      Total Orders
+                    </span>
+                    <span className="text-xl font-extrabold text-emerald-950">{orderTotalCount}</span>
                   </div>
-                  <span className="text-xl font-extrabold text-amber-900">{pendingCount}</span>
-                </div>
 
-                <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
-                  <span className="text-[11px] text-emerald-800 font-semibold">Confirmed</span>
-                  <span className="text-xl font-extrabold text-emerald-900">{confirmedCount}</span>
-                </div>
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-amber-800 font-semibold">Pending Review</span>
+                      {orderPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />}
+                    </div>
+                    <span className="text-xl font-extrabold text-amber-900">{orderPendingCount}</span>
+                  </div>
 
-                <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col">
-                  <span className="text-[11px] text-blue-800 font-semibold">Completed</span>
-                  <span className="text-xl font-extrabold text-blue-900">{completedCount}</span>
-                </div>
+                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
+                    <span className="text-[11px] text-emerald-800 font-semibold">Confirmed</span>
+                    <span className="text-xl font-extrabold text-emerald-900">{orderConfirmedCount}</span>
+                  </div>
 
-                <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col col-span-2 sm:col-span-1">
-                  <span className="text-[11px] text-rose-700 font-semibold">Cancelled</span>
-                  <span className="text-xl font-extrabold text-rose-800">{cancelledCount}</span>
+                  <div className="p-3 rounded-2xl bg-orange-50 border border-orange-200 flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-orange-800 font-semibold flex items-center gap-1">
+                        <ChefHat className="w-3 h-3 text-orange-600" />
+                        In Kitchen
+                      </span>
+                      {orderPreparingCount > 0 && <span className="w-2 h-2 rounded-full bg-orange-500 animate-ping" />}
+                    </div>
+                    <span className="text-xl font-extrabold text-orange-900">{orderPreparingCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-indigo-50 border border-indigo-200 flex flex-col">
+                    <span className="text-[11px] text-indigo-800 font-semibold flex items-center gap-1">
+                      <Bike className="w-3 h-3 text-indigo-600" />
+                      On Delivery
+                    </span>
+                    <span className="text-xl font-extrabold text-indigo-900">{orderOutForDeliveryCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-teal-50 border border-teal-200 flex flex-col col-span-2 sm:col-span-1">
+                    <span className="text-[11px] text-teal-800 font-semibold">Delivered / Done</span>
+                    <span className="text-xl font-extrabold text-teal-900">{orderDeliveredCount}</span>
+                  </div>
                 </div>
-              </div>
+              ) : activeTab === 'bookings' ? (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col">
+                    <span className="text-[11px] text-stone-500 font-semibold">Table Bookings</span>
+                    <span className="text-xl font-extrabold text-stone-900">{tableTotalCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-amber-800 font-semibold">Pending Review</span>
+                      {tablePendingCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />}
+                    </div>
+                    <span className="text-xl font-extrabold text-amber-900">{tablePendingCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
+                    <span className="text-[11px] text-emerald-800 font-semibold">Confirmed Tables</span>
+                    <span className="text-xl font-extrabold text-emerald-900">{tableConfirmedCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col">
+                    <span className="text-[11px] text-blue-800 font-semibold">Completed Dine-in</span>
+                    <span className="text-xl font-extrabold text-blue-900">{tableCompletedCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col col-span-2 sm:col-span-1">
+                    <span className="text-[11px] text-rose-700 font-semibold">Cancelled</span>
+                    <span className="text-xl font-extrabold text-rose-800">{tableCancelledCount}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col">
+                    <span className="text-[11px] text-stone-500 font-semibold">Total Inquiries</span>
+                    <span className="text-xl font-extrabold text-stone-900">{totalCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-amber-800 font-semibold">Pending Action</span>
+                      {pendingCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />}
+                    </div>
+                    <span className="text-xl font-extrabold text-amber-900">{pendingCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
+                    <span className="text-[11px] text-emerald-800 font-semibold">Confirmed</span>
+                    <span className="text-xl font-extrabold text-emerald-900">{confirmedCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col">
+                    <span className="text-[11px] text-blue-800 font-semibold">Completed / Done</span>
+                    <span className="text-xl font-extrabold text-blue-900">{completedCount}</span>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col col-span-2 sm:col-span-1">
+                    <span className="text-[11px] text-rose-700 font-semibold">Cancelled</span>
+                    <span className="text-xl font-extrabold text-rose-800">{cancelledCount}</span>
+                  </div>
+                </div>
+              )}
 
               {/* Navigation Tabs & Actions */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                 <div className="flex flex-wrap items-center gap-1.5 p-1 bg-stone-100 rounded-2xl border border-stone-200">
+                  {/* Tab: Food Orders (Dedicated) */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('orders')}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'orders'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-stone-700 hover:text-stone-900 bg-white/60 hover:bg-white'
+                    }`}
+                  >
+                    <ShoppingBag className="w-3.5 h-3.5" />
+                    <span>Food Orders ({orderTotalCount})</span>
+                    {orderPendingCount > 0 && (
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    )}
+                  </button>
+
+                  {/* Tab: Table Reservations */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('bookings')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeTab === 'bookings'
                         ? 'bg-white text-emerald-900 shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
                     }`}
                   >
-                    All Bookings ({bookings.length})
+                    <Utensils className="w-3.5 h-3.5 text-stone-500" />
+                    <span>Table Bookings ({tableTotalCount})</span>
                   </button>
 
+                  {/* Tab: All Inquiries */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('all-inquiries')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === 'all-inquiries'
+                        ? 'bg-white text-stone-900 shadow-xs font-bold'
+                        : 'text-stone-500 hover:text-stone-800'
+                    }`}
+                  >
+                    All Inquiries ({totalCount})
+                  </button>
+
+                  {/* Tab: Registered Users */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('users')}
@@ -595,33 +984,35 @@ service cloud.firestore {
                     }`}
                   >
                     <Users className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Customers & Users ({usersList.length})</span>
+                    <span>Customers ({usersList.length})</span>
                   </button>
 
+                  {/* Tab: Add Booking / Order */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('add-booking')}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
                       activeTab === 'add-booking'
-                        ? 'bg-emerald-600 text-white shadow-xs'
+                        ? 'bg-stone-900 text-white shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
                     }`}
                   >
                     <PlusCircle className="w-3.5 h-3.5" />
-                    <span>+ Add New Booking</span>
+                    <span>+ New Entry</span>
                   </button>
 
+                  {/* Tab: Cloud Status */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('cloud-status')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeTab === 'cloud-status'
                         ? 'bg-amber-500 text-stone-950 shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
                     }`}
                   >
                     <Cloud className="w-3.5 h-3.5" />
-                    <span>Database & Sync</span>
+                    <span className="hidden md:inline">Database & Sync</span>
                     {firestoreStatus && !firestoreStatus.connected && (
                       <span className="w-2 h-2 rounded-full bg-rose-500" title="Firestore not accepting writes" />
                     )}
@@ -630,10 +1021,11 @@ service cloud.firestore {
                     )}
                   </button>
 
+                  {/* Tab: Analytics */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('metrics')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all hidden sm:flex items-center gap-1 cursor-pointer ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all hidden lg:flex items-center gap-1 cursor-pointer ${
                       activeTab === 'metrics'
                         ? 'bg-white text-emerald-900 shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
@@ -654,7 +1046,7 @@ service cloud.firestore {
                       setIsLoadingBookings(true);
                       setTimeout(() => setIsLoadingBookings(false), 500);
                     }}
-                    className="p-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 transition-colors"
+                    className="p-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 transition-colors cursor-pointer"
                     title="Refresh Data"
                   >
                     <RefreshCw
@@ -667,9 +1059,655 @@ service cloud.firestore {
 
             {/* TAB CONTENT AREA */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-              {/* TAB 1: ALL BOOKINGS LIST & FILTERS */}
+              {/* ======================================================== */}
+              {/* TAB 1: DEDICATED FOOD ORDERS SECTION WITH STATUS UPDATES */}
+              {/* ======================================================== */}
+              {activeTab === 'orders' && (
+                <div className="space-y-4">
+                  {/* WhatsApp Automation & Quick Controls Bar */}
+                  <div className="bg-emerald-50/80 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                        <WhatsAppIcon className="w-4 h-4 fill-white" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-emerald-950">
+                            ⚡ Instant Order WhatsApp Dispatcher
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-200/70 text-emerald-900 text-[10px] font-extrabold flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                            Live Realtime Alerts
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-emerald-800/90 leading-tight">
+                          Clicking status updates (Confirm, In Kitchen, Out for Delivery, Delivered) instantly alerts customer on WhatsApp with reference ID and ETA!
+                        </p>
+                      </div>
+                    </div>
+
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-stone-800 bg-white px-3 py-1.5 rounded-xl border border-emerald-300 shadow-2xs hover:bg-emerald-50/50 transition-colors shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={autoWhatsAppOnStatus}
+                        onChange={(e) => setAutoWhatsAppOnStatus(e.target.checked)}
+                        className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600"
+                      />
+                      <span>Auto-send on status click</span>
+                    </label>
+                  </div>
+
+                  {/* WhatsApp Last Notification Banner */}
+                  {lastWhatsAppAlert && (
+                    <div className="p-4 rounded-2xl bg-stone-900 text-white shadow-lg border border-emerald-500/40 animate-in fade-in space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                            <CheckCircle2 className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-emerald-300">
+                                ⚡ WhatsApp Notification Dispatched
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  lastWhatsAppAlert.newStatus === 'Confirmed'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40'
+                                    : lastWhatsAppAlert.newStatus === 'Preparing'
+                                    ? 'bg-orange-500/20 text-orange-300 border-orange-400/40'
+                                    : lastWhatsAppAlert.newStatus === 'Out for Delivery'
+                                    ? 'bg-indigo-500/20 text-indigo-300 border-indigo-400/40'
+                                    : lastWhatsAppAlert.newStatus === 'Delivered' || lastWhatsAppAlert.newStatus === 'Completed'
+                                    ? 'bg-teal-500/20 text-teal-300 border-teal-400/40'
+                                    : lastWhatsAppAlert.newStatus === 'Cancelled'
+                                    ? 'bg-rose-500/20 text-rose-300 border-rose-400/40'
+                                    : 'bg-amber-500/20 text-amber-300 border-amber-400/40'
+                                }`}
+                              >
+                                {lastWhatsAppAlert.newStatus}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">
+                                Sent Instantly ✅
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-stone-300">
+                              Recipient: <strong>{lastWhatsAppAlert.customerName}</strong> (Ref: #{lastWhatsAppAlert.referenceId}) • <span className="font-mono text-amber-300">{lastWhatsAppAlert.customerPhone}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openWhatsAppDirect(
+                                lastWhatsAppAlert.customerPhone,
+                                lastWhatsAppAlert.messageText
+                              )
+                            }
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-stone-950 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Open in WhatsApp"
+                          >
+                            <WhatsAppIcon className="w-3.5 h-3.5 fill-stone-950" />
+                            <span className="text-[11px]">Send in WhatsApp</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(lastWhatsAppAlert.messageText);
+                              setCopiedAlertMsg(true);
+                              setTimeout(() => setCopiedAlertMsg(false), 2000);
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            {copiedAlertMsg ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span className="text-emerald-300 text-[11px]">Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" />
+                                <span className="text-[11px]">Copy Text</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setLastWhatsAppAlert(null)}
+                            className="p-1.5 rounded-xl hover:bg-white/10 text-stone-400 hover:text-white transition-colors cursor-pointer"
+                            title="Dismiss Banner"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Message preview snippet */}
+                      <div className="p-3 rounded-xl bg-black/40 border border-white/10 text-[11px] text-stone-200 font-mono whitespace-pre-wrap max-h-24 overflow-y-auto leading-relaxed">
+                        {lastWhatsAppAlert.messageText}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Search & Filters Toolbar */}
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-stone-200 shadow-2xs">
+                    {/* Search Input */}
+                    <div className="relative flex-1">
+                      <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={orderSearchQuery}
+                        onChange={(e) => setOrderSearchQuery(e.target.value)}
+                        placeholder="Search orders by customer, phone, ref #, dish, address..."
+                        className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                      />
+                      {orderSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setOrderSearchQuery('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Status Filter & Type Filter */}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={orderStatusFilter}
+                        onChange={(e) => setOrderStatusFilter(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs font-semibold text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                      >
+                        <option value="all">All Order Statuses</option>
+                        <option value="Pending">🟡 Pending Review ({orderPendingCount})</option>
+                        <option value="Confirmed">🟢 Confirmed ({orderConfirmedCount})</option>
+                        <option value="Preparing">👨‍🍳 In Kitchen ({orderPreparingCount})</option>
+                        <option value="Out for Delivery">🛵 Out for Delivery ({orderOutForDeliveryCount})</option>
+                        <option value="Delivered">✅ Delivered ({orderDeliveredCount})</option>
+                        <option value="Cancelled">❌ Cancelled ({orderCancelledCount})</option>
+                      </select>
+
+                      <select
+                        value={orderTypeFilter}
+                        onChange={(e) => setOrderTypeFilter(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs font-semibold text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                      >
+                        <option value="all">All Types</option>
+                        <option value="delivery">🛵 Home Delivery</option>
+                        <option value="takeaway">🥡 Takeaway / Parcel</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Orders Cards List */}
+                  {filteredFoodOrders.length === 0 ? (
+                    <div className="p-12 text-center bg-white rounded-3xl border border-stone-200 space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-stone-100 text-stone-400 flex items-center justify-center mx-auto">
+                        <ShoppingBag className="w-6 h-6" />
+                      </div>
+                      <h5 className="font-bold text-stone-800 text-base">No food orders found</h5>
+                      <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                        {orderSearchQuery || orderStatusFilter !== 'all' || orderTypeFilter !== 'all'
+                          ? 'No food orders match your selected filters. Try clearing search or filter.'
+                          : 'No online food orders or parcel inquiries have been placed yet.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('add-booking')}
+                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
+                      >
+                        + Create Manual Order
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-4">
+                      {filteredFoodOrders.map((order) => {
+                        const isActionBusy = actionLoadingId === (order.id || order.referenceId);
+                        const isEditingNotes = editingNotesId === (order.id || order.referenceId);
+                        const deliveryAddress = extractDeliveryAddress(order.notes);
+                        const cookingNotes = extractCookingNotes(order.notes);
+                        const isTakeaway = order.serviceType.toLowerCase().includes('takeaway');
+
+                        // Status Badge Colors
+                        let badgeColor = 'bg-amber-100 text-amber-900 border-amber-200';
+                        let statusIcon = <Clock className="w-3.5 h-3.5 text-amber-700" />;
+                        
+                        if (order.status === 'Confirmed') {
+                          badgeColor = 'bg-emerald-100 text-emerald-900 border-emerald-300';
+                          statusIcon = <Check className="w-3.5 h-3.5 text-emerald-700" />;
+                        } else if (order.status === 'Preparing') {
+                          badgeColor = 'bg-orange-100 text-orange-950 border-orange-300 animate-pulse';
+                          statusIcon = <ChefHat className="w-3.5 h-3.5 text-orange-700" />;
+                        } else if (order.status === 'Out for Delivery') {
+                          badgeColor = 'bg-indigo-100 text-indigo-900 border-indigo-300';
+                          statusIcon = <Bike className="w-3.5 h-3.5 text-indigo-700" />;
+                        } else if (order.status === 'Delivered' || order.status === 'Completed') {
+                          badgeColor = 'bg-teal-100 text-teal-900 border-teal-300';
+                          statusIcon = <CheckCircle2 className="w-3.5 h-3.5 text-teal-700" />;
+                        } else if (order.status === 'Cancelled') {
+                          badgeColor = 'bg-rose-100 text-rose-800 border-rose-200';
+                          statusIcon = <X className="w-3.5 h-3.5 text-rose-700" />;
+                        }
+
+                        return (
+                          <div
+                            key={order.id || order.referenceId}
+                            className="p-4 sm:p-5 rounded-2xl bg-white border border-stone-200/90 shadow-sm hover:border-emerald-300 transition-all space-y-4"
+                          >
+                            {/* Order Card Top: Reference, Type Badge, Status, Action tools */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-100 pb-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="px-2.5 py-1 rounded-lg bg-stone-900 text-amber-400 font-mono font-extrabold text-xs">
+                                  #{order.referenceId}
+                                </span>
+
+                                {/* Order Type Badge */}
+                                <span
+                                  className={`px-2.5 py-0.5 rounded-full border text-[11px] font-bold flex items-center gap-1 ${
+                                    isTakeaway
+                                      ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                      : 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                                  }`}
+                                >
+                                  {isTakeaway ? (
+                                    <>
+                                      <Package className="w-3 h-3 text-amber-700" />
+                                      <span>🥡 Takeaway Pickup</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Bike className="w-3 h-3 text-emerald-700" />
+                                      <span>🛵 Home Delivery</span>
+                                    </>
+                                  )}
+                                </span>
+
+                                {/* Live Status Badge */}
+                                <span
+                                  className={`px-2.5 py-0.5 rounded-full border text-[11px] font-bold flex items-center gap-1 ${badgeColor}`}
+                                >
+                                  {statusIcon}
+                                  <span>{order.status}</span>
+                                </span>
+
+                                <span className="text-[11px] text-stone-400 hidden sm:inline">
+                                  • {new Date(order.createdAt).toLocaleString('en-IN', {
+                                    dateStyle: 'medium',
+                                    timeStyle: 'short',
+                                  })}
+                                </span>
+                              </div>
+
+                              {/* Quick Action Tools */}
+                              <div className="flex items-center gap-1.5">
+                                {/* Kitchen Ticket (KOT) */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyKOT(order)}
+                                  className="px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                  title="Copy Kitchen Order Ticket (KOT) to clipboard"
+                                >
+                                  <Receipt className="w-3.5 h-3.5 text-stone-600" />
+                                  <span>{copiedKOTId === (order.id || order.referenceId) ? 'KOT Copied! ✓' : 'Kitchen Slip'}</span>
+                                </button>
+
+                                {/* WhatsApp Customer */}
+                                <button
+                                  type="button"
+                                  onClick={() => sendWhatsAppUpdate(order)}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                  title="Send WhatsApp update to customer"
+                                >
+                                  <WhatsAppIcon className="w-3.5 h-3.5 text-emerald-700" />
+                                  <span className="hidden sm:inline">WhatsApp</span>
+                                </button>
+
+                                {/* Direct Call */}
+                                <a
+                                  href={`tel:${order.userPhone}`}
+                                  className="px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold flex items-center gap-1 transition-colors"
+                                  title="Call Customer"
+                                >
+                                  <Phone className="w-3.5 h-3.5 text-stone-600" />
+                                  <span className="hidden sm:inline">Call</span>
+                                </a>
+
+                                {/* Delete */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy}
+                                  onClick={() => handleDeleteBooking(order)}
+                                  className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  title="Delete order record"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Order Card Middle: 3-Column Breakdown */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                              {/* 1. Customer & Contact Details */}
+                              <div className="space-y-1.5 bg-stone-50/70 p-3 rounded-xl border border-stone-200/60">
+                                <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider flex items-center gap-1">
+                                  <Users className="w-3 h-3 text-stone-400" />
+                                  Customer & Timing
+                                </span>
+                                <div className="font-bold text-stone-900 text-sm">
+                                  {order.userName}
+                                </div>
+                                <div className="text-stone-700 flex items-center gap-1 font-mono font-semibold">
+                                  <Phone className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                  <span>{order.userPhone}</span>
+                                </div>
+                                {order.userEmail && (
+                                  <div className="text-stone-500 truncate text-[11px]">
+                                    {order.userEmail}
+                                  </div>
+                                )}
+                                <div className="pt-1 text-stone-600 flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-stone-400" />
+                                  <span>Slot: <strong>{order.timeSlot}</strong></span>
+                                </div>
+                              </div>
+
+                              {/* 2. Delivery Address or Takeaway Location */}
+                              <div className="space-y-1.5 bg-stone-50/70 p-3 rounded-xl border border-stone-200/60">
+                                <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider flex items-center gap-1">
+                                  <MapPin className="w-3 h-3 text-stone-400" />
+                                  {isTakeaway ? 'Pickup Details' : 'Delivery Destination'}
+                                </span>
+
+                                {isTakeaway ? (
+                                  <div className="text-stone-700 space-y-1">
+                                    <div className="font-semibold text-amber-900">
+                                      🥡 Restaurant Counter Pickup
+                                    </div>
+                                    <p className="text-[11px] text-stone-500">
+                                      Customer will pick up packed parcel directly from the front billing counter.
+                                    </p>
+                                  </div>
+                                ) : deliveryAddress ? (
+                                  <div className="space-y-2">
+                                    <div className="font-semibold text-stone-900 leading-snug bg-white p-2 rounded-lg border border-stone-200">
+                                      {deliveryAddress}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <a
+                                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(deliveryAddress)}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="px-2 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold text-[10px] flex items-center gap-1 transition-colors"
+                                      >
+                                        <Navigation className="w-3 h-3 text-emerald-700" />
+                                        <span>Google Maps</span>
+                                      </a>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(deliveryAddress);
+                                          alert('Address copied to clipboard!');
+                                        }}
+                                        className="px-2 py-1 rounded-lg bg-stone-200 hover:bg-stone-300 text-stone-700 font-medium text-[10px] flex items-center gap-1"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                        <span>Copy Address</span>
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-stone-400 italic">
+                                    No address specified (Contact customer for location)
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* 3. Items Ordered & Bill Total */}
+                              <div className="space-y-1.5 bg-stone-50/70 p-3 rounded-xl border border-stone-200/60 flex flex-col justify-between">
+                                <div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider flex items-center gap-1">
+                                      <Utensils className="w-3 h-3 text-stone-400" />
+                                      Items Ordered
+                                    </span>
+                                    <span className="font-extrabold text-emerald-800 text-sm bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-200">
+                                      {order.guests || 'Standard Rate'}
+                                    </span>
+                                  </div>
+
+                                  <div className="font-semibold text-amber-950 bg-amber-50/90 p-2 rounded-lg border border-amber-200/70 mt-1 whitespace-pre-wrap leading-snug">
+                                    {order.customDish || 'Food Items Selected'}
+                                  </div>
+
+                                  {cookingNotes && (
+                                    <div className="text-[11px] text-stone-600 italic mt-1 bg-white p-1.5 rounded-md border border-stone-200">
+                                      Note: <strong>{cookingNotes}</strong>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Manager Note Editor */}
+                                <div className="pt-1.5 border-t border-stone-200/60">
+                                  {isEditingNotes ? (
+                                    <div className="space-y-1.5">
+                                      <input
+                                        type="text"
+                                        value={tempNotes}
+                                        onChange={(e) => setTempNotes(e.target.value)}
+                                        placeholder="Assign rider name / phone or note..."
+                                        className="w-full px-2 py-1 text-xs rounded-lg border border-emerald-300 bg-white"
+                                      />
+                                      <div className="flex gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSaveNotes(order.id || order.referenceId)}
+                                          className="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold"
+                                        >
+                                          Save Note
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingNotesId(null)}
+                                          className="px-2 py-0.5 rounded bg-stone-200 text-stone-700 text-[10px]"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-between text-[11px] text-stone-500">
+                                      <span className="truncate max-w-[180px]">
+                                        {order.notes ? `Rider/Note: ${order.notes}` : 'Assign Rider / Note'}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingNotesId(order.id || order.referenceId);
+                                          setTempNotes(order.notes || '');
+                                        }}
+                                        className="text-emerald-700 hover:underline font-bold text-[10px] cursor-pointer"
+                                      >
+                                        Edit
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Order Card Bottom: Comprehensive Status Pipeline Update Buttons */}
+                            <div className="pt-2.5 border-t border-stone-100 flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-xs text-stone-600 font-bold flex items-center gap-1">
+                                <span>Order Status Action:</span>
+                              </span>
+
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {/* 1. Pending */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy || order.status === 'Pending'}
+                                  onClick={() =>
+                                    handleStatusChange(order.id || order.referenceId, 'Pending', order)
+                                  }
+                                  className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
+                                    order.status === 'Pending'
+                                      ? 'bg-amber-100 text-amber-900 border border-amber-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                      : 'bg-amber-50 hover:bg-amber-100 text-amber-900 cursor-pointer active:scale-95'
+                                  }`}
+                                  title="Mark order as pending review"
+                                >
+                                  <span>{order.status === 'Pending' ? '● Pending' : 'Pending'}</span>
+                                </button>
+
+                                {/* 2. Confirm Order */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy || order.status === 'Confirmed'}
+                                  onClick={() =>
+                                    handleStatusChange(order.id || order.referenceId, 'Confirmed', order)
+                                  }
+                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                    order.status === 'Confirmed'
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                      : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
+                                  }`}
+                                  title="Confirm order & notify customer on WhatsApp"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>{order.status === 'Confirmed' ? '✓ Confirmed' : 'Confirm'}</span>
+                                </button>
+
+                                {/* 3. In Kitchen (Preparing) */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy || order.status === 'Preparing'}
+                                  onClick={() =>
+                                    handleStatusChange(order.id || order.referenceId, 'Preparing', order)
+                                  }
+                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                    order.status === 'Preparing'
+                                      ? 'bg-orange-100 text-orange-900 border border-orange-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                      : 'bg-orange-600 hover:bg-orange-700 text-white cursor-pointer active:scale-95'
+                                  }`}
+                                  title="Send to kitchen: Food is being prepared"
+                                >
+                                  <ChefHat className="w-3.5 h-3.5" />
+                                  <span>{order.status === 'Preparing' ? '👨‍🍳 Preparing...' : '👨‍🍳 In Kitchen'}</span>
+                                </button>
+
+                                {/* 4. Out for Delivery / Ready for Pickup */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy || order.status === 'Out for Delivery'}
+                                  onClick={() =>
+                                    handleStatusChange(order.id || order.referenceId, 'Out for Delivery', order)
+                                  }
+                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                    order.status === 'Out for Delivery'
+                                      ? 'bg-indigo-100 text-indigo-900 border border-indigo-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                      : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:scale-95'
+                                  }`}
+                                  title={isTakeaway ? 'Mark food ready for counter pickup' : 'Mark order out for delivery with rider'}
+                                >
+                                  {isTakeaway ? (
+                                    <>
+                                      <Package className="w-3.5 h-3.5" />
+                                      <span>{order.status === 'Out for Delivery' ? '🥡 Ready for Pickup' : '🥡 Ready for Pickup'}</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Bike className="w-3.5 h-3.5" />
+                                      <span>{order.status === 'Out for Delivery' ? '🛵 Out for Delivery' : '🛵 Out for Delivery'}</span>
+                                    </>
+                                  )}
+                                </button>
+
+                                {/* 5. Delivered / Completed */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy || order.status === 'Delivered' || order.status === 'Completed'}
+                                  onClick={() =>
+                                    handleStatusChange(order.id || order.referenceId, 'Delivered', order)
+                                  }
+                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                    order.status === 'Delivered' || order.status === 'Completed'
+                                      ? 'bg-teal-100 text-teal-900 border border-teal-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                      : 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer active:scale-95'
+                                  }`}
+                                  title="Mark order as delivered & thank customer"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>{order.status === 'Delivered' || order.status === 'Completed' ? '✅ Delivered' : 'Delivered'}</span>
+                                </button>
+
+                                {/* 6. Cancelled */}
+                                <button
+                                  type="button"
+                                  disabled={isActionBusy || order.status === 'Cancelled'}
+                                  onClick={() =>
+                                    handleStatusChange(order.id || order.referenceId, 'Cancelled', order)
+                                  }
+                                  className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
+                                    order.status === 'Cancelled'
+                                      ? 'bg-rose-100 text-rose-800 border border-rose-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                      : 'bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer active:scale-95'
+                                  }`}
+                                  title="Cancel order and notify customer"
+                                >
+                                  <span>{order.status === 'Cancelled' ? '✕ Cancelled' : 'Cancel'}</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ======================================================== */}
+              {/* TAB 2: TABLE RESERVATIONS ONLY                           */}
+              {/* ======================================================== */}
               {activeTab === 'bookings' && (
                 <div className="space-y-4">
+                  {/* WhatsApp Automation & Quick Controls Bar */}
+                  <div className="bg-emerald-50/70 border border-emerald-200/80 p-3 sm:p-3.5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                        <WhatsAppIcon className="w-4 h-4 fill-white" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-emerald-950">
+                            ⚡ Instant Table Booking Dispatcher
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-200/70 text-emerald-900 text-[10px] font-extrabold flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                            Active
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-emerald-800/90 leading-tight">
+                          Manage dine-in table reservations and send real-time WhatsApp confirmations to guests.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('orders')}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <ShoppingBag className="w-3.5 h-3.5" />
+                      <span>Switch to Food Orders ({orderTotalCount})</span>
+                    </button>
+                  </div>
+
                   {/* Search & Filters Toolbar */}
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-stone-200 shadow-2xs">
                     {/* Search Input */}
@@ -679,7 +1717,7 @@ service cloud.firestore {
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search by customer name, phone, ref #, dish, notes..."
+                        placeholder="Search table reservations by customer name, phone, ref #..."
                         className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600"
                       />
                       {searchQuery && (
@@ -701,49 +1739,37 @@ service cloud.firestore {
                         className="px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs font-semibold text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
                       >
                         <option value="all">All Statuses</option>
-                        <option value="pending">🟡 Pending ({pendingCount})</option>
-                        <option value="confirmed">🟢 Confirmed ({confirmedCount})</option>
-                        <option value="completed">🔵 Completed ({completedCount})</option>
-                        <option value="cancelled">⚪ Cancelled ({cancelledCount})</option>
-                      </select>
-
-                      <select
-                        value={serviceFilter}
-                        onChange={(e) => setServiceFilter(e.target.value)}
-                        className="px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs font-semibold text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
-                      >
-                        <option value="all">All Services</option>
-                        <option value="Dine-In">Dine-In Table</option>
-                        <option value="Takeaway">Takeaway / Parcel</option>
-                        <option value="Gathering">Party / Gathering</option>
-                        <option value="Dietary">Jain / Dietary</option>
+                        <option value="pending">🟡 Pending ({tablePendingCount})</option>
+                        <option value="confirmed">🟢 Confirmed ({tableConfirmedCount})</option>
+                        <option value="completed">🔵 Completed ({tableCompletedCount})</option>
+                        <option value="cancelled">⚪ Cancelled ({tableCancelledCount})</option>
                       </select>
                     </div>
                   </div>
 
                   {/* Bookings List Cards */}
-                  {filteredBookings.length === 0 ? (
+                  {filteredTableBookings.length === 0 ? (
                     <div className="p-12 text-center bg-white rounded-3xl border border-stone-200 space-y-3">
                       <div className="w-12 h-12 rounded-2xl bg-stone-100 text-stone-400 flex items-center justify-center mx-auto">
                         <Utensils className="w-6 h-6" />
                       </div>
-                      <h5 className="font-bold text-stone-800 text-base">No bookings found</h5>
+                      <h5 className="font-bold text-stone-800 text-base">No table reservations found</h5>
                       <p className="text-xs text-stone-500 max-w-sm mx-auto">
-                        {searchQuery || statusFilter !== 'all' || serviceFilter !== 'all'
-                          ? 'No inquiries match your filter criteria. Try resetting search or filter filters.'
-                          : 'No customer bookings or inquiries have been registered yet.'}
+                        {searchQuery || statusFilter !== 'all'
+                          ? 'No table reservations match your search. Try adjusting the filters.'
+                          : 'No dine-in table reservations have been registered yet.'}
                       </p>
                       <button
                         type="button"
                         onClick={() => setActiveTab('add-booking')}
-                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold"
+                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
                       >
-                        + Create First Booking
+                        + Reserve a Table
                       </button>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 gap-3.5">
-                      {filteredBookings.map((b) => {
+                      {filteredTableBookings.map((b) => {
                         const isActionBusy = actionLoadingId === (b.id || b.referenceId);
                         const isEditingNotes = editingNotesId === (b.id || b.referenceId);
 
@@ -768,9 +1794,10 @@ service cloud.firestore {
                                   #{b.referenceId}
                                 </span>
                                 <span
-                                  className={`px-2.5 py-0.5 rounded-full border text-[11px] font-bold ${badgeColor}`}
+                                  className={`px-2.5 py-0.5 rounded-full border text-[11px] font-bold flex items-center gap-1 ${badgeColor}`}
                                 >
-                                  {b.status}
+                                  {b.status === 'Completed' && <Lock className="w-3 h-3 text-blue-700" />}
+                                  <span>{b.status}</span>
                                 </span>
                                 <span className="text-[11px] text-stone-400 hidden sm:inline">
                                   • {new Date(b.createdAt).toLocaleString('en-IN', {
@@ -808,7 +1835,7 @@ service cloud.firestore {
                                   type="button"
                                   disabled={isActionBusy}
                                   onClick={() => handleDeleteBooking(b)}
-                                  className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                                  className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                                   title="Delete record"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -840,7 +1867,7 @@ service cloud.firestore {
                               {/* Service & Guest Details */}
                               <div className="space-y-1">
                                 <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider">
-                                  Requirement & Slot
+                                  Table & Party Size
                                 </span>
                                 <div className="font-bold text-emerald-800">{b.serviceType}</div>
                                 <div className="text-stone-600 flex items-center gap-1">
@@ -856,15 +1883,13 @@ service cloud.firestore {
                               {/* Dish & Notes */}
                               <div className="space-y-1">
                                 <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider">
-                                  Items & Special Notes
+                                  Table Notes & Dietary
                                 </span>
                                 {b.customDish ? (
                                   <div className="font-semibold text-amber-900 bg-amber-50/80 p-1.5 rounded-lg border border-amber-200/60">
                                     Dish: {b.customDish}
                                   </div>
-                                ) : (
-                                  <div className="text-stone-400 italic">No specific dish</div>
-                                )}
+                                ) : null}
 
                                 {isEditingNotes ? (
                                   <div className="space-y-1.5 pt-1">
@@ -872,7 +1897,7 @@ service cloud.firestore {
                                       type="text"
                                       value={tempNotes}
                                       onChange={(e) => setTempNotes(e.target.value)}
-                                      placeholder="Add manager note or table #..."
+                                      placeholder="Add table # or manager note..."
                                       className="w-full px-2 py-1 text-xs rounded-lg border border-emerald-300 bg-white"
                                     />
                                     <div className="flex gap-1">
@@ -913,58 +1938,270 @@ service cloud.firestore {
                               </div>
                             </div>
 
-                            {/* Card Bottom: Quick Status Control Buttons */}
-                            <div className="pt-2 border-t border-stone-100 flex flex-wrap items-center justify-between gap-2">
-                              <span className="text-[11px] text-stone-500 font-medium">
-                                Update Status:
-                              </span>
+                            {/* Card Bottom: Quick Status Control Buttons or Locked Banner */}
+                            {b.status === 'Completed' ? (
+                              <div className="pt-2.5 border-t border-stone-100 flex flex-wrap items-center justify-between gap-2 bg-blue-50/70 p-3 rounded-xl border border-blue-200/70">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs">
+                                    <Lock className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <div className="text-xs font-bold text-blue-950 flex items-center gap-1.5">
+                                      <span>Table Reservation Finalized</span>
+                                      <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-extrabold border border-blue-200">
+                                        Locked 🔒
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-blue-800/80">
+                                      Guests served and bill cleared. Status is finalized.
+                                    </p>
+                                  </div>
+                                </div>
 
-                              <div className="flex flex-wrap items-center gap-1.5">
+                                <div className="flex items-center gap-1.5 text-xs text-blue-900 font-semibold">
+                                  <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                                  <span>Dine-In Completed</span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="pt-2 border-t border-stone-100 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-[11px] text-stone-500 font-medium">
+                                  Update Status:
+                                </span>
+
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={actionLoadingId === (b.id || b.referenceId) || b.status === 'Confirmed'}
+                                    onClick={() =>
+                                      handleStatusChange(b.id || b.referenceId, 'Confirmed', b)
+                                    }
+                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                      b.status === 'Confirmed'
+                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                    title={b.status === 'Confirmed' ? 'Current Status: Confirmed' : 'Confirm reservation and notify customer on WhatsApp'}
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{b.status === 'Confirmed' ? '✓ Confirmed' : 'Confirm'}</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={actionLoadingId === (b.id || b.referenceId) || b.status === 'Completed'}
+                                    onClick={() =>
+                                      handleStatusChange(b.id || b.referenceId, 'Completed', b)
+                                    }
+                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                      b.status === 'Completed'
+                                        ? 'bg-blue-100 text-blue-800 border border-blue-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                    title={b.status === 'Completed' ? 'Current Status: Completed' : 'Mark completed'}
+                                  >
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    <span>{b.status === 'Completed' ? '✓ Completed' : 'Complete'}</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={actionLoadingId === (b.id || b.referenceId) || b.status === 'Pending'}
+                                    onClick={() =>
+                                      handleStatusChange(b.id || b.referenceId, 'Pending', b)
+                                    }
+                                    className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
+                                      b.status === 'Pending'
+                                        ? 'bg-amber-100 text-amber-900 border border-amber-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-amber-50 hover:bg-amber-100 text-amber-900 cursor-pointer active:scale-95'
+                                    }`}
+                                    title={b.status === 'Pending' ? 'Current Status: Pending' : 'Mark pending review'}
+                                  >
+                                    <span>{b.status === 'Pending' ? '● Pending' : 'Pending'}</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={actionLoadingId === (b.id || b.referenceId) || b.status === 'Cancelled'}
+                                    onClick={() =>
+                                      handleStatusChange(b.id || b.referenceId, 'Cancelled', b)
+                                    }
+                                    className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
+                                      b.status === 'Cancelled'
+                                        ? 'bg-rose-100 text-rose-800 border border-rose-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer active:scale-95'
+                                    }`}
+                                    title={b.status === 'Cancelled' ? 'Current Status: Cancelled' : 'Cancel reservation'}
+                                  >
+                                    <span>{b.status === 'Cancelled' ? '✕ Cancelled' : 'Cancel'}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ======================================================== */}
+              {/* TAB 3: ALL INQUIRIES UNIFIED VIEW                        */}
+              {/* ======================================================== */}
+              {activeTab === 'all-inquiries' && (
+                <div className="space-y-4">
+                  {/* Search & Filters Toolbar */}
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-stone-200 shadow-2xs">
+                    {/* Search Input */}
+                    <div className="relative flex-1">
+                      <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search all records by customer name, phone, ref #, dish, notes..."
+                        className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                      />
+                      {searchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Status Filter & Service Filter */}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs font-semibold text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="pending">🟡 Pending ({pendingCount})</option>
+                        <option value="confirmed">🟢 Confirmed ({confirmedCount})</option>
+                        <option value="completed">🔵 Completed ({completedCount})</option>
+                        <option value="cancelled">⚪ Cancelled ({cancelledCount})</option>
+                      </select>
+
+                      <select
+                        value={serviceFilter}
+                        onChange={(e) => setServiceFilter(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs font-semibold text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                      >
+                        <option value="all">All Services</option>
+                        <option value="Food">Food Orders & Delivery</option>
+                        <option value="Dine-In">Dine-In Table</option>
+                        <option value="Takeaway">Takeaway / Parcel</option>
+                        <option value="Gathering">Party / Gathering</option>
+                        <option value="Dietary">Jain / Dietary</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* All Inquiries List Cards */}
+                  {filteredAllInquiries.length === 0 ? (
+                    <div className="p-12 text-center bg-white rounded-3xl border border-stone-200 space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-stone-100 text-stone-400 flex items-center justify-center mx-auto">
+                        <Utensils className="w-6 h-6" />
+                      </div>
+                      <h5 className="font-bold text-stone-800 text-base">No records found</h5>
+                      <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                        {searchQuery || statusFilter !== 'all' || serviceFilter !== 'all'
+                          ? 'No inquiries match your criteria.'
+                          : 'No inquiries have been registered yet.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3.5">
+                      {filteredAllInquiries.map((b) => {
+                        const isActionBusy = actionLoadingId === (b.id || b.referenceId);
+
+                        let badgeColor =
+                          'bg-amber-100 text-amber-900 border-amber-200';
+                        if (b.status === 'Confirmed')
+                          badgeColor = 'bg-emerald-100 text-emerald-900 border-emerald-300';
+                        if (b.status === 'Completed' || b.status === 'Delivered')
+                          badgeColor = 'bg-blue-100 text-blue-900 border-blue-300';
+                        if (b.status === 'Preparing')
+                          badgeColor = 'bg-orange-100 text-orange-900 border-orange-300';
+                        if (b.status === 'Out for Delivery')
+                          badgeColor = 'bg-indigo-100 text-indigo-900 border-indigo-300';
+                        if (b.status === 'Cancelled')
+                          badgeColor = 'bg-stone-100 text-stone-600 border-stone-200';
+
+                        return (
+                          <div
+                            key={b.id || b.referenceId}
+                            className="p-4 sm:p-5 rounded-2xl bg-white border border-stone-200/90 shadow-xs hover:border-emerald-300 transition-all space-y-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-100 pb-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-1 rounded-lg bg-stone-900 text-amber-400 font-mono font-bold text-xs">
+                                  #{b.referenceId}
+                                </span>
+                                <span className="px-2.5 py-0.5 rounded-full bg-stone-100 text-stone-800 text-[11px] font-bold border border-stone-200">
+                                  {b.serviceType}
+                                </span>
+                                <span
+                                  className={`px-2.5 py-0.5 rounded-full border text-[11px] font-bold ${badgeColor}`}
+                                >
+                                  {b.status}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
                                 <button
                                   type="button"
-                                  disabled={isActionBusy || b.status === 'Confirmed'}
-                                  onClick={() =>
-                                    handleStatusChange(b.id || b.referenceId, 'Confirmed')
-                                  }
-                                  className="px-3 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                                  onClick={() => sendWhatsAppUpdate(b)}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-1"
                                 >
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>Confirm Table / Order</span>
+                                  <WhatsAppIcon className="w-3.5 h-3.5 text-emerald-700" />
+                                  <span className="hidden sm:inline">WhatsApp</span>
                                 </button>
-
+                                <a
+                                  href={`tel:${b.userPhone}`}
+                                  className="px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold flex items-center gap-1"
+                                >
+                                  <Phone className="w-3.5 h-3.5 text-stone-600" />
+                                  <span className="hidden sm:inline">Call</span>
+                                </a>
                                 <button
                                   type="button"
-                                  disabled={isActionBusy || b.status === 'Completed'}
-                                  onClick={() =>
-                                    handleStatusChange(b.id || b.referenceId, 'Completed')
-                                  }
-                                  className="px-3 py-1 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                                  disabled={isActionBusy}
+                                  onClick={() => handleDeleteBooking(b)}
+                                  className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"
                                 >
-                                  <CheckCircle2 className="w-3.5 h-3.5" />
-                                  <span>Mark Completed</span>
+                                  <Trash2 className="w-4 h-4" />
                                 </button>
+                              </div>
+                            </div>
 
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || b.status === 'Pending'}
-                                  onClick={() =>
-                                    handleStatusChange(b.id || b.referenceId, 'Pending')
-                                  }
-                                  className="px-2.5 py-1 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 disabled:opacity-40 font-semibold text-xs transition-colors cursor-pointer"
-                                >
-                                  <span>Pending</span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || b.status === 'Cancelled'}
-                                  onClick={() =>
-                                    handleStatusChange(b.id || b.referenceId, 'Cancelled')
-                                  }
-                                  className="px-2.5 py-1 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 disabled:opacity-40 font-semibold text-xs transition-colors cursor-pointer"
-                                >
-                                  <span>Cancel</span>
-                                </button>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                              <div>
+                                <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider">
+                                  Customer
+                                </span>
+                                <div className="font-bold text-stone-900">{b.userName}</div>
+                                <div className="text-stone-600 font-mono">{b.userPhone}</div>
+                              </div>
+                              <div>
+                                <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider">
+                                  Requirements & Time
+                                </span>
+                                <div className="font-semibold text-emerald-800">{b.guests}</div>
+                                <div className="text-stone-600">{b.timeSlot}</div>
+                              </div>
+                              <div>
+                                <span className="text-[10px] uppercase font-bold text-stone-400 tracking-wider">
+                                  Details
+                                </span>
+                                <div className="font-medium text-amber-900">{b.customDish || 'No specific dish'}</div>
+                                <div className="text-stone-500 italic truncate max-w-[200px]">{b.notes || 'No notes'}</div>
                               </div>
                             </div>
                           </div>
@@ -1363,6 +2600,27 @@ service cloud.firestore {
                         onChange={(e) => setNewNotes(e.target.value)}
                         placeholder="e.g. Table #4 assigned, AC section requested..."
                         className="w-full px-3.5 py-2 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 resize-none"
+                      />
+                    </div>
+
+                    {/* WhatsApp Notification Toggle */}
+                    <div className="p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200/80 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <WhatsAppIcon className="w-4 h-4 text-emerald-700 shrink-0" />
+                        <div>
+                          <p className="text-xs font-bold text-emerald-950">
+                            Notify Customer on WhatsApp
+                          </p>
+                          <p className="text-[11px] text-emerald-800">
+                            Automatically open and dispatch booking confirmation message to customer upon creation.
+                          </p>
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={sendWhatsAppOnCreate}
+                        onChange={(e) => setSendWhatsAppOnCreate(e.target.checked)}
+                        className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600"
                       />
                     </div>
 

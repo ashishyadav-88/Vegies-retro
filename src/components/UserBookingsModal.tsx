@@ -85,7 +85,6 @@ export const UserBookingsModal: React.FC<UserBookingsModalProps> = ({
   };
 
   const handleCancelBooking = async (bookingId: string) => {
-    if (!window.confirm('Are you sure you want to cancel this booking inquiry?')) return;
     setCancellingId(bookingId);
     try {
       await cancelUserBooking(bookingId, user?.uid);
@@ -102,6 +101,24 @@ export const UserBookingsModal: React.FC<UserBookingsModalProps> = ({
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
             <CheckCircle2 className="w-3 h-3" /> Confirmed
+          </span>
+        );
+      case 'Preparing':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-orange-100 text-orange-800 border border-orange-200 animate-pulse">
+            👨‍🍳 Preparing in Kitchen
+          </span>
+        );
+      case 'Out for Delivery':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+            🛵 Out for Delivery
+          </span>
+        );
+      case 'Delivered':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
+            <CheckCircle2 className="w-3 h-3" /> Delivered
           </span>
         );
       case 'Cancelled':
@@ -355,7 +372,7 @@ export const UserBookingsModal: React.FC<UserBookingsModalProps> = ({
                     <div className="flex items-center justify-between pt-1 border-t border-stone-100">
                       <a
                         href={`https://wa.me/91${RESTAURANT_INFO.phone}?text=${encodeURIComponent(
-                          `Hello Vegies Restro, checking on booking #${item.referenceId} (${item.serviceType}) for ${item.userName}.`
+                          `Hello Vegies Restro 😊 Checking status of booking #${item.referenceId} (${item.serviceType}) for ${item.userName}. Thank you!`
                         )}`}
                         target="_blank"
                         rel="noopener noreferrer"
@@ -365,16 +382,26 @@ export const UserBookingsModal: React.FC<UserBookingsModalProps> = ({
                         <span>Check Status on WhatsApp</span>
                       </a>
 
-                      {item.status === 'Pending' && item.id && (
+                      {item.status === 'Cancelled' ? (
+                        <button
+                          type="button"
+                          disabled
+                          className="px-2.5 py-1 rounded-lg bg-rose-50 text-rose-400 border border-rose-200 text-[11px] font-semibold opacity-60 cursor-not-allowed pointer-events-none flex items-center gap-1 select-none"
+                          title="This booking is already cancelled"
+                        >
+                          <span>✕ Cancelled</span>
+                        </button>
+                      ) : item.status === 'Pending' && item.id ? (
                         <button
                           type="button"
                           disabled={cancellingId === item.id}
                           onClick={() => handleCancelBooking(item.id!)}
-                          className="text-[11px] text-stone-400 hover:text-rose-600 font-semibold cursor-pointer"
+                          className="px-2.5 py-1 rounded-lg hover:bg-rose-50 text-[11px] text-stone-500 hover:text-rose-600 font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                          title="Cancel your booking inquiry"
                         >
                           {cancellingId === item.id ? 'Cancelling...' : 'Cancel Inquiry'}
                         </button>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 ))}

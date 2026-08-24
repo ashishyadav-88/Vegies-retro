@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { RESTAURANT_INFO } from '../data/restaurantData';
+import { useAuth } from '../context/AuthContext';
+import { createBookingInquiry } from '../services/bookingService';
+import { BookingInquiry } from '../types';
 import {
   Phone,
   Navigation,
@@ -11,41 +14,108 @@ import {
   CheckCircle2,
   Calendar,
   Users,
+  AlertCircle,
+  ShieldCheck,
+  Lock,
+  UserCheck,
+  Bookmark,
+  ShoppingBag,
+  CalendarCheck,
 } from 'lucide-react';
 
 interface ContactCtaProps {
   onOpenInquiry: (serviceType?: string) => void;
+  onOpenOrderFood?: (category?: string, dishName?: string) => void;
   onOpenFullMenu: () => void;
+  onOpenAuth: (mode?: 'signin' | 'signup', prompt?: string) => void;
+  onOpenUserBookings?: () => void;
 }
 
 export const ContactCta: React.FC<ContactCtaProps> = ({
   onOpenInquiry,
+  onOpenOrderFood,
   onOpenFullMenu,
+  onOpenAuth,
+  onOpenUserBookings,
 }) => {
+  const { user, userProfile } = useAuth();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [service, setService] = useState('Dine-In Table Inquiry');
+  const [timeSlot, setTimeSlot] = useState('Dinner (7:30 PM - 10:30 PM)');
   const [message, setMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [savedInquiry, setSavedInquiry] = useState<BookingInquiry | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Auto-fill customer info if logged in
+  useEffect(() => {
+    if (userProfile) {
+      if (userProfile.displayName && !name) setName(userProfile.displayName);
+      if (userProfile.phoneNumber && !phone) setPhone(userProfile.phoneNumber);
+    } else if (user) {
+      if (user.displayName && !name) setName(user.displayName);
+      if (user.phoneNumber && !phone) setPhone(user.phoneNumber);
+    }
+  }, [user, userProfile]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !phone) return;
 
-    // Construct WhatsApp message URL for instant customer response
-    const text = encodeURIComponent(
-      `Hello Vegies Restro!\n\n` +
-      `Name: ${name}\n` +
-      `Contact Phone: ${phone}\n` +
-      `Service: ${service}\n` +
-      (message ? `Note / Request: ${message}\n` : '') +
-      `\nI would like to inquire regarding Vegies Restro.`
-    );
-    
-    setSubmitted(true);
-    setTimeout(() => {
-      window.open(`https://wa.me/91${RESTAURANT_INFO.phone}?text=${text}`, '_blank');
-    }, 400);
+    if (!user) {
+      onOpenAuth('signin', 'Please sign in or create an account to submit your restaurant inquiry.');
+      return;
+    }
+
+    if (!name.trim() || !phone.trim()) return;
+
+    setIsSubmitting(true);
+    setSubmitError(null);
+
+    try {
+      // 1. Save directly into Firestore and Admin Master Storage
+      const saved = await createBookingInquiry({
+        userId: user.uid,
+        userName: name.trim(),
+        userPhone: phone.trim(),
+        userEmail: user.email || '',
+        serviceType: service,
+        guests: 'Quick Website Inquiry',
+        timeSlot: timeSlot,
+        notes: message.trim() || 'Inquiry submitted from footer contact form',
+      });
+
+      setSavedInquiry(saved);
+      setSubmitted(true);
+
+      // 2. Construct WhatsApp message URL with official reference ID
+      const text = encodeURIComponent(
+        `Hello Vegies Restro!\n\n` +
+        `🍽️ New Website Inquiry (#${saved.referenceId})\n\n` +
+        `👤 Name: ${name.trim()}\n` +
+        `📞 Contact Phone: ${phone.trim()}\n` +
+        `🏷️ Service: ${service}\n` +
+        `⏰ Preferred Time: ${timeSlot}\n` +
+        (message.trim() ? `📝 Note / Request: ${message.trim()}\n` : '') +
+        `\nI would like to inquire regarding Vegies Restro.`
+      );
+      
+      setTimeout(() => {
+        window.open(`https://wa.me/91${RESTAURANT_INFO.phone}?text=${text}`, '_blank');
+      }, 500);
+    } catch (err: any) {
+      console.error('Error submitting inquiry to database:', err);
+      setSubmitError(err.message || 'Failed to save inquiry. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleResetForm = () => {
+    setSubmitted(false);
+    setSavedInquiry(null);
+    setMessage('');
   };
 
   return (
@@ -80,40 +150,41 @@ export const ContactCta: React.FC<ContactCtaProps> = ({
               <span>Open Daily: <strong>9:00 AM – 11:00 PM</strong> (Dine-in & Takeaway)</span>
             </div>
 
-            {/* Requested 3 Major CTA Buttons */}
+            {/* Requested Major CTA Buttons */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
-              {/* Call 7028828220 */}
+              {/* Table Booking */}
+              <button
+                type="button"
+                id="cta-table-booking-btn"
+                onClick={() => onOpenInquiry('Dine-In Table Reservation')}
+                className="px-6 py-4 rounded-2xl bg-amber-400 hover:bg-amber-300 text-amber-950 font-extrabold text-base shadow-lg shadow-amber-500/20 hover:shadow-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer"
+              >
+                <CalendarCheck className="w-5 h-5 text-amber-950" />
+                <span>Table Booking</span>
+              </button>
+
+              {/* Order Food Online */}
+              {onOpenOrderFood && (
+                <button
+                  type="button"
+                  id="cta-order-food-btn"
+                  onClick={() => onOpenOrderFood()}
+                  className="px-6 py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-base shadow-lg shadow-emerald-900/30 hover:shadow-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer"
+                >
+                  <ShoppingBag className="w-5 h-5 text-white" />
+                  <span>Order Food</span>
+                </button>
+              )}
+
+              {/* Call */}
               <a
                 href={`tel:${RESTAURANT_INFO.phone}`}
                 id="cta-call-btn"
-                className="px-6 py-4 rounded-2xl bg-amber-400 hover:bg-amber-300 text-amber-950 font-extrabold text-base shadow-lg shadow-amber-500/20 hover:shadow-xl transition-all flex items-center justify-center gap-2.5"
+                className="px-5 py-4 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-bold text-base border border-white/20 shadow-sm transition-all flex items-center justify-center gap-2"
               >
-                <Phone className="w-5 h-5 fill-current" />
-                <span>Call {RESTAURANT_INFO.phone}</span>
+                <Phone className="w-5 h-5 fill-current text-amber-400" />
+                <span>Call Us</span>
               </a>
-
-              {/* Get Directions */}
-              <a
-                href={RESTAURANT_INFO.googleMapsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                id="cta-directions-btn"
-                className="px-5 py-4 rounded-2xl bg-emerald-800 hover:bg-emerald-700 text-white font-bold text-base border border-emerald-600/60 shadow-sm transition-all flex items-center justify-center gap-2"
-              >
-                <Navigation className="w-5 h-5 text-amber-300" />
-                <span>Get Directions</span>
-              </a>
-
-              {/* View Menu */}
-              <button
-                type="button"
-                id="cta-view-menu-btn"
-                onClick={onOpenFullMenu}
-                className="px-5 py-4 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-bold text-base border border-white/20 backdrop-blur-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Utensils className="w-5 h-5" />
-                <span>View Menu</span>
-              </button>
             </div>
 
             {/* Direct WhatsApp Option */}
@@ -136,10 +207,10 @@ export const ContactCta: React.FC<ContactCtaProps> = ({
           <div className="lg:col-span-6">
             <div className="p-6 sm:p-8 rounded-3xl bg-white text-stone-900 shadow-2xl border border-stone-100 text-left">
               
-              <div className="mb-6">
+              <div className="mb-5">
                 <div className="flex items-center justify-between">
                   <h3 className="font-['Outfit',sans-serif] text-xl font-bold text-stone-900">
-                    Quick Restaurant Inquiry
+                    Quick Table Booking
                   </h3>
                   <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
                     Fast Response
@@ -150,25 +221,118 @@ export const ContactCta: React.FC<ContactCtaProps> = ({
                 </p>
               </div>
 
-              {submitted ? (
-                <div className="py-8 text-center space-y-3 animate-in fade-in duration-300">
-                  <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
-                    <CheckCircle2 className="w-6 h-6" />
+              {/* User Authentication Status Banner */}
+              {!user && !submitted && (
+                <div className="mb-4 p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                    <p className="text-xs font-semibold text-amber-900">
+                      Please sign in before booking to save and track your inquiries.
+                    </p>
                   </div>
-                  <h4 className="font-bold text-stone-900 text-base">Inquiry Prepared!</h4>
-                  <p className="text-stone-600 text-xs max-w-xs mx-auto">
-                    Opening your chat with Vegies Restro at +91 70288 28220. You can also call us directly!
-                  </p>
                   <button
                     type="button"
-                    onClick={() => setSubmitted(false)}
-                    className="mt-2 text-xs font-bold text-emerald-700 hover:underline"
+                    id="cta-signin-banner-btn"
+                    onClick={() => onOpenAuth('signin', 'Please sign in or register to submit and save your restaurant inquiry.')}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:scale-95 text-amber-950 text-xs font-bold shrink-0 transition-all cursor-pointer shadow-xs"
                   >
-                    Send another inquiry
+                    Sign In / Register
                   </button>
+                </div>
+              )}
+
+              {user && !submitted && (
+                <div className="mb-4 px-3.5 py-2.5 rounded-2xl bg-emerald-50 border border-emerald-200/80 flex items-center justify-between text-xs text-emerald-900">
+                  <div className="flex items-center gap-2">
+                    <UserCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>
+                      Booking as <strong>{userProfile?.displayName || user.displayName || user.email}</strong>
+                    </span>
+                  </div>
+                  {onOpenUserBookings && (
+                    <button
+                      type="button"
+                      onClick={onOpenUserBookings}
+                      className="text-emerald-700 font-bold hover:underline cursor-pointer flex items-center gap-1 text-[11px]"
+                    >
+                      <Bookmark className="w-3 h-3" />
+                      <span>My Bookings</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {submitted && savedInquiry ? (
+                <div className="py-6 text-center space-y-3.5 animate-in fade-in duration-300">
+                  <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto shadow-inner">
+                    <CheckCircle2 className="w-8 h-8" />
+                  </div>
+
+                  <div>
+                    <span className="inline-block px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-mono font-bold text-xs mb-1">
+                      Ref #{savedInquiry.referenceId}
+                    </span>
+                    <h4 className="font-['Outfit',sans-serif] font-bold text-stone-900 text-lg">
+                      Inquiry Saved & Transmitted!
+                    </h4>
+                    <p className="text-stone-600 text-xs max-w-xs mx-auto mt-1">
+                      Your inquiry is registered in the Admin Portal and synced to Firestore. We have also opened WhatsApp to notify Vegies Restro.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-2xl bg-stone-50 border border-stone-200 text-left text-xs space-y-1.5">
+                    <div className="flex justify-between">
+                      <span className="text-stone-500">Service:</span>
+                      <span className="font-bold text-stone-800">{savedInquiry.serviceType}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-stone-500">Preferred Time:</span>
+                      <span className="font-bold text-stone-800">{savedInquiry.timeSlot || 'General'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-stone-500">Contact:</span>
+                      <span className="font-bold text-stone-800">{savedInquiry.userName} ({savedInquiry.userPhone})</span>
+                    </div>
+                    {savedInquiry.notes && (
+                      <div className="flex justify-between">
+                        <span className="text-stone-500">Note:</span>
+                        <span className="font-medium text-stone-700 truncate max-w-[200px]">{savedInquiry.notes}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 flex flex-col gap-2">
+                    <a
+                      href={`https://wa.me/91${RESTAURANT_INFO.phone}?text=${encodeURIComponent(
+                        `Hello Vegies Restro!\n\n🍽️ Inquiry (#${savedInquiry.referenceId})\n👤 Name: ${savedInquiry.userName}\n📞 Phone: ${savedInquiry.userPhone}\n🏷️ Service: ${savedInquiry.serviceType}\n` +
+                        (savedInquiry.notes ? `📝 Note: ${savedInquiry.notes}\n` : '')
+                      )}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>Chat on WhatsApp (+91 {RESTAURANT_INFO.phone})</span>
+                    </a>
+
+                    <button
+                      type="button"
+                      onClick={handleResetForm}
+                      className="mt-1 text-xs font-bold text-emerald-800 hover:underline cursor-pointer"
+                    >
+                      Send another inquiry
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <form onSubmit={handleSubmit} className="space-y-4">
+                  {submitError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <span>{submitError}</span>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label htmlFor="cta-form-name" className="block text-xs font-bold text-stone-700 mb-1">
@@ -201,21 +365,41 @@ export const ContactCta: React.FC<ContactCtaProps> = ({
                     </div>
                   </div>
 
-                  <div>
-                    <label htmlFor="cta-form-service" className="block text-xs font-bold text-stone-700 mb-1">
-                      Service Requirement
-                    </label>
-                    <select
-                      id="cta-form-service"
-                      value={service}
-                      onChange={(e) => setService(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
-                    >
-                      <option value="Dine-In Table Inquiry">Dine-In Table Seating</option>
-                      <option value="Food Takeaway Order">Food Takeaway / Parcel</option>
-                      <option value="Family / Party Order">Family Gathering / Party Inquiry</option>
-                      <option value="General Menu Inquiry">Menu Inquiry / Custom Dish</option>
-                    </select>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="cta-form-service" className="block text-xs font-bold text-stone-700 mb-1">
+                        Service Requirement
+                      </label>
+                      <select
+                        id="cta-form-service"
+                        value={service}
+                        onChange={(e) => setService(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                      >
+                        <option value="Dine-In Table Inquiry">Dine-In Table Seating</option>
+                        <option value="Food Takeaway Order">Food Takeaway / Parcel</option>
+                        <option value="Family / Party Order">Family Gathering / Party Inquiry</option>
+                        <option value="General Menu Inquiry">Menu Inquiry / Custom Dish</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label htmlFor="cta-form-time" className="block text-xs font-bold text-stone-700 mb-1">
+                        Preferred Time (9 AM – 11 PM)
+                      </label>
+                      <select
+                        id="cta-form-time"
+                        value={timeSlot}
+                        onChange={(e) => setTimeSlot(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                      >
+                        <option value="Morning (9:00 AM - 11:30 AM)">Morning (9:00 AM - 11:30 AM)</option>
+                        <option value="Lunch (12:00 PM - 3:30 PM)">Lunch (12:00 PM - 3:30 PM)</option>
+                        <option value="Evening (4:00 PM - 7:00 PM)">Evening (4:00 PM - 7:00 PM)</option>
+                        <option value="Dinner (7:30 PM - 10:30 PM)">Dinner (7:30 PM - 10:30 PM)</option>
+                        <option value="Immediate / Ready Soon">Immediate / Ready Soon</option>
+                      </select>
+                    </div>
                   </div>
 
                   <div>
@@ -234,11 +418,27 @@ export const ContactCta: React.FC<ContactCtaProps> = ({
 
                   <button
                     type="submit"
+                    disabled={isSubmitting}
                     id="cta-submit-inquiry-btn"
-                    className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    className={`w-full py-3.5 rounded-xl font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                      !user
+                        ? 'bg-amber-400 hover:bg-amber-300 text-amber-950 shadow-amber-950/20'
+                        : 'bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white'
+                    }`}
                   >
-                    <Send className="w-4 h-4" />
-                    <span>Send Inquiry to Vegies Restro</span>
+                    {isSubmitting ? (
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : !user ? (
+                      <>
+                        <Lock className="w-4 h-4 text-amber-950" />
+                        <span>Sign In & Submit Booking</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" />
+                        <span>Send Inquiry to Vegies Restro</span>
+                      </>
+                    )}
                   </button>
                 </form>
               )}

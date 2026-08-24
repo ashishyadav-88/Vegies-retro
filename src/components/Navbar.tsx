@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ShieldCheck,
   Sparkles,
+  ShoppingBag,
 } from 'lucide-react';
 
 // Custom WhatsApp SVG Icon
@@ -34,6 +35,7 @@ export const WhatsAppIcon: React.FC<{ className?: string }> = ({ className = 'w-
 
 interface NavbarProps {
   onOpenInquiry: (serviceType?: string) => void;
+  onOpenOrderFood: (category?: string, dishName?: string) => void;
   onOpenFullMenu: () => void;
   onOpenAuth: (mode?: 'signin' | 'signup', prompt?: string) => void;
   onOpenUserBookings: () => void;
@@ -42,6 +44,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   onOpenInquiry,
+  onOpenOrderFood,
   onOpenFullMenu,
   onOpenAuth,
   onOpenUserBookings,
@@ -136,16 +139,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             </span>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              type="button"
-              onClick={onOpenAdminPortal}
-              id="topbar-admin-btn"
-              className="text-stone-500 hover:text-stone-900 flex items-center gap-1 text-[11px] font-semibold transition-colors cursor-pointer"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
-              <span>Manager Portal</span>
-            </button>
-            <span className="text-stone-300">|</span>
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenAdminPortal}
+                  id="topbar-admin-btn"
+                  className="text-stone-500 hover:text-stone-900 flex items-center gap-1 text-[11px] font-semibold transition-colors cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Manager Portal</span>
+                </button>
+                <span className="text-stone-300">|</span>
+              </>
+            )}
             <a
               href={RESTAURANT_INFO.whatsappUrl}
               target="_blank"
@@ -207,26 +214,27 @@ export const Navbar: React.FC<NavbarProps> = ({
           </nav>
 
           {/* Desktop Header Actions */}
-          <div className="hidden lg:flex items-center gap-2.5">
+          <div className="hidden lg:flex items-center gap-2 xl:gap-3">
             {/* Admin Portal Direct Button if Admin Logged in */}
             {isAdmin ? (
               <button
                 type="button"
                 id="nav-admin-portal-active-btn"
                 onClick={onOpenAdminPortal}
-                className="px-3 py-2 rounded-xl text-xs font-bold text-white bg-stone-900 hover:bg-black border border-amber-400/50 shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2 rounded-xl text-xs font-bold text-amber-300 bg-stone-900 hover:bg-stone-800 border border-amber-400/40 shadow-xs hover:shadow-sm transition-all duration-200 flex items-center gap-1.5 cursor-pointer active:scale-95"
               >
-                <ShieldCheck className="w-4 h-4 text-amber-400" />
+                <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>Admin Portal</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
               </button>
             ) : (
               <button
                 type="button"
                 id="nav-quick-menu-btn"
                 onClick={onOpenFullMenu}
-                className="px-3 py-2 rounded-xl text-sm font-semibold text-stone-700 bg-stone-100 hover:bg-stone-200 border border-stone-200/80 transition-all flex items-center gap-1.5 cursor-pointer"
+                className="px-3 py-2 rounded-xl text-xs xl:text-sm font-semibold text-stone-700 bg-stone-100/90 hover:bg-stone-200/90 hover:text-stone-900 border border-stone-200/80 transition-all duration-200 flex items-center gap-1.5 cursor-pointer active:scale-95"
               >
-                <Utensils className="w-4 h-4 text-amber-600" />
+                <Utensils className="w-3.5 h-3.5 text-amber-600" />
                 <span>Menu</span>
               </button>
             )}
@@ -237,10 +245,10 @@ export const Navbar: React.FC<NavbarProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               id="nav-whatsapp-btn"
-              className="px-3.5 py-2 rounded-xl text-sm font-bold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 shadow-sm hover:shadow-md transition-all flex items-center gap-1.5"
+              className="px-3.5 py-2 rounded-xl text-xs xl:text-sm font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-xs hover:shadow-md hover:shadow-emerald-600/20 transition-all duration-200 flex items-center gap-1.5 active:scale-95 group"
               aria-label="Chat on WhatsApp"
             >
-              <WhatsAppIcon className="w-4 h-4 text-emerald-900" />
+              <WhatsAppIcon className="w-4 h-4 fill-white group-hover:rotate-6 transition-transform" />
               <span>WhatsApp</span>
             </a>
 
@@ -251,27 +259,27 @@ export const Navbar: React.FC<NavbarProps> = ({
                   type="button"
                   id="nav-user-profile-btn"
                   onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                  className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-xs ${
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs active:scale-95 ${
                     isAdmin
-                      ? 'border-amber-400 bg-stone-900 text-amber-300'
-                      : 'border-stone-200 bg-stone-50 hover:bg-stone-100 text-stone-800'
+                      ? 'border-amber-400/60 bg-stone-900 text-amber-300 hover:bg-stone-800'
+                      : 'border-stone-200 bg-white hover:bg-stone-50 text-stone-800'
                   }`}
                 >
                   <div
-                    className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold ${
+                    className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shadow-2xs ${
                       isAdmin ? 'bg-amber-400 text-stone-950' : 'bg-emerald-600 text-white'
                     }`}
                   >
                     {isAdmin ? '👑' : userProfile?.displayName ? userProfile.displayName.charAt(0).toUpperCase() : 'U'}
                   </div>
-                  <span className="max-w-[110px] truncate">
+                  <span className="max-w-[100px] xl:max-w-[120px] truncate">
                     {isAdmin ? 'Parvati (Admin)' : userProfile?.displayName || 'My Account'}
                   </span>
                   <ChevronDown className="w-3.5 h-3.5 text-stone-400" />
                 </button>
 
                 {userDropdownOpen && (
-                  <div className="absolute right-0 mt-2 w-60 bg-white rounded-2xl shadow-xl border border-stone-200 py-2 z-50 animate-in fade-in slide-in-from-top-1">
+                  <div className="absolute right-0 mt-2 w-60 bg-white rounded-2xl shadow-xl border border-stone-200/90 py-2 z-50 animate-in fade-in slide-in-from-top-1">
                     <div className="px-4 py-2 border-b border-stone-100">
                       <div className="flex items-center gap-1.5">
                         <p className="text-xs font-bold text-stone-900 truncate">
@@ -286,18 +294,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <p className="text-[11px] text-stone-500 truncate">{user.email}</p>
                     </div>
 
-                    {/* Admin Portal Shortcut in dropdown */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setUserDropdownOpen(false);
-                        onOpenAdminPortal();
-                      }}
-                      className="w-full px-4 py-2.5 text-xs text-left font-bold text-stone-900 hover:bg-amber-50 hover:text-amber-900 flex items-center gap-2 cursor-pointer border-b border-stone-100"
-                    >
-                      <ShieldCheck className="w-4 h-4 text-amber-600" />
-                      <span>Admin Management Portal</span>
-                    </button>
+                    {/* Admin Portal Shortcut in dropdown - ONLY for Admins */}
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUserDropdownOpen(false);
+                          onOpenAdminPortal();
+                        }}
+                        className="w-full px-4 py-2.5 text-xs text-left font-bold text-stone-900 hover:bg-amber-50 hover:text-amber-900 flex items-center gap-2 cursor-pointer border-b border-stone-100 transition-colors"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-amber-600" />
+                        <span>Admin Management Portal</span>
+                      </button>
+                    )}
 
                     <button
                       type="button"
@@ -305,10 +315,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setUserDropdownOpen(false);
                         onOpenUserBookings();
                       }}
-                      className="w-full px-4 py-2.5 text-xs text-left font-semibold text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2 cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs text-left font-semibold text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2 cursor-pointer transition-colors"
                     >
                       <Bookmark className="w-4 h-4 text-emerald-600" />
-                      <span>My Bookings & Inquiries</span>
+                      <span>My Bookings & Orders</span>
                     </button>
 
                     <button
@@ -317,7 +327,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setUserDropdownOpen(false);
                         await logout();
                       }}
-                      className="w-full px-4 py-2.5 text-xs text-left font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer border-t border-stone-100"
+                      className="w-full px-4 py-2.5 text-xs text-left font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer border-t border-stone-100 transition-colors"
                     >
                       <LogOut className="w-4 h-4" />
                       <span>Sign Out</span>
@@ -330,23 +340,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 type="button"
                 id="nav-signin-btn"
                 onClick={() => onOpenAuth('signin')}
-                className="px-3.5 py-2 rounded-xl text-sm font-semibold text-stone-700 bg-stone-100 hover:bg-stone-200 border border-stone-200 transition-all flex items-center gap-1.5 cursor-pointer"
+                className="px-3 py-2 rounded-xl text-xs xl:text-sm font-semibold text-stone-700 bg-white hover:bg-stone-50 border border-stone-200/90 shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center gap-1.5 cursor-pointer active:scale-95"
               >
-                <UserIcon className="w-4 h-4 text-emerald-700" />
+                <UserIcon className="w-3.5 h-3.5 text-emerald-700" />
                 <span>Sign In</span>
               </button>
             )}
 
-            {/* Inquire / Order Button */}
-            <button
-              type="button"
-              id="nav-inquire-btn"
-              onClick={() => onOpenInquiry('General Inquiry')}
-              className="px-3.5 py-2 rounded-xl text-sm font-bold text-amber-950 bg-amber-400 hover:bg-amber-500 shadow-sm hover:shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
-            >
-              <CalendarCheck className="w-4 h-4" />
-              <span>Order / Inquire</span>
-            </button>
+            {/* Sign In Button / Profile */}
           </div>
 
           {/* Mobile Right Controls */}
@@ -499,21 +500,23 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             )}
 
-            {/* Admin Direct Access in Mobile Drawer */}
-            <button
-              type="button"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                onOpenAdminPortal();
-              }}
-              className="w-full p-3 rounded-2xl bg-stone-900 text-white border border-amber-500/40 flex items-center justify-between text-xs font-bold shadow-xs cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-amber-400" />
-                <span>Admin & Staff Portal</span>
-              </div>
-              <span className="text-[11px] text-amber-300 font-normal">Manage Bookings →</span>
-            </button>
+            {/* Admin Direct Access in Mobile Drawer - ONLY for Admins */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onOpenAdminPortal();
+                }}
+                className="w-full p-3 rounded-2xl bg-stone-900 text-white border border-amber-500/40 flex items-center justify-between text-xs font-bold shadow-xs cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-400" />
+                  <span>Admin & Staff Portal</span>
+                </div>
+                <span className="text-[11px] text-amber-300 font-normal">Manage Bookings →</span>
+              </button>
+            )}
 
             {/* Quick Status Banner */}
             <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200/60 flex items-center justify-between text-xs">
@@ -564,6 +567,35 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span>Call {RESTAURANT_INFO.formattedPhone}</span>
               </a>
 
+              {/* Booking & Order Direct CTAs in Drawer */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  id="mobile-drawer-booking-btn"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onOpenInquiry('Dine-In Table Inquiry');
+                  }}
+                  className="py-3 px-3 rounded-xl bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold flex items-center justify-center gap-1.5 text-xs shadow-sm cursor-pointer"
+                >
+                  <CalendarCheck className="w-4 h-4" />
+                  <span>Table Booking</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="mobile-drawer-order-food-btn"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onOpenOrderFood();
+                  }}
+                  className="py-3 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold flex items-center justify-center gap-1.5 text-xs shadow-sm cursor-pointer"
+                >
+                  <ShoppingBag className="w-4 h-4" />
+                  <span>Order Food</span>
+                </button>
+              </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -583,7 +615,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   target="_blank"
                   rel="noopener noreferrer"
                   id="mobile-drawer-directions-btn"
-                  className="py-3 px-3 rounded-xl bg-amber-100 text-amber-900 font-semibold flex items-center justify-center gap-1.5 border border-amber-200 text-sm"
+                  className="py-3 px-3 rounded-xl bg-amber-100 text-amber-950 font-semibold flex items-center justify-center gap-1.5 border border-amber-200 text-sm"
                 >
                   <Navigation className="w-4 h-4 text-amber-700" />
                   <span>Directions</span>

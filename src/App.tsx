@@ -12,6 +12,7 @@ import { ContactCta } from './components/ContactCta';
 import { Footer } from './components/Footer';
 import { FullMenuModal } from './components/FullMenuModal';
 import { InquiryModal } from './components/InquiryModal';
+import { OrderFoodModal } from './components/OrderFoodModal';
 import { AuthModal } from './components/AuthModal';
 import { UserBookingsModal } from './components/UserBookingsModal';
 import { AdminPortalModal } from './components/AdminPortalModal';
@@ -22,6 +23,11 @@ function MainApp() {
   const [isInquiryOpen, setIsInquiryOpen] = useState<boolean>(false);
   const [inquiryService, setInquiryService] = useState<string>('Dine-In Table Reservation');
   const [inquiryDish, setInquiryDish] = useState<string>('');
+
+  // Order Food Modal State
+  const [isOrderFoodOpen, setIsOrderFoodOpen] = useState<boolean>(false);
+  const [orderFoodCategory, setOrderFoodCategory] = useState<string>('all');
+  const [orderFoodDish, setOrderFoodDish] = useState<string>('');
 
   // Auth & Bookings modal state
   const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
@@ -37,9 +43,14 @@ function MainApp() {
   };
 
   const handleOpenInquiryWithDish = (dishName: string) => {
-    setInquiryService('Food Takeaway / Parcel Order');
-    setInquiryDish(dishName);
-    setIsInquiryOpen(true);
+    // Open the dedicated Order Food Modal directly prefilled with the dish
+    handleOpenOrderFood('all', dishName);
+  };
+
+  const handleOpenOrderFood = (category: string = 'all', dishName: string = '') => {
+    setOrderFoodCategory(category);
+    setOrderFoodDish(dishName);
+    setIsOrderFoodOpen(true);
   };
 
   const handleOpenFullMenu = () => {
@@ -65,6 +76,7 @@ function MainApp() {
       {/* 1. Header Navigation */}
       <Navbar
         onOpenInquiry={handleOpenInquiry}
+        onOpenOrderFood={handleOpenOrderFood}
         onOpenFullMenu={handleOpenFullMenu}
         onOpenAuth={handleOpenAuth}
         onOpenUserBookings={handleOpenUserBookings}
@@ -74,7 +86,10 @@ function MainApp() {
       {/* Main Page Sections */}
       <main className="flex-1">
         {/* 2. Hero Section */}
-        <Hero onOpenInquiry={handleOpenInquiry} />
+        <Hero
+          onOpenInquiry={handleOpenInquiry}
+          onOpenOrderFood={handleOpenOrderFood}
+        />
 
         {/* 3. About Section */}
         <About onOpenInquiry={handleOpenInquiry} />
@@ -100,17 +115,21 @@ function MainApp() {
         {/* 9. Final Call To Action (CTA) */}
         <ContactCta
           onOpenInquiry={handleOpenInquiry}
+          onOpenOrderFood={handleOpenOrderFood}
           onOpenFullMenu={handleOpenFullMenu}
+          onOpenAuth={handleOpenAuth}
+          onOpenUserBookings={handleOpenUserBookings}
         />
       </main>
 
       {/* 10. Footer */}
-      <Footer onOpenAdminPortal={handleOpenAdminPortal} />
+      <Footer />
 
       {/* Mobile Floating Action Bar */}
       <FloatingActions
         onOpenFullMenu={handleOpenFullMenu}
         onOpenInquiry={handleOpenInquiry}
+        onOpenOrderFood={() => handleOpenOrderFood()}
       />
 
       {/* Full Menu Modal */}
@@ -120,7 +139,7 @@ function MainApp() {
         onSelectDishForInquiry={handleOpenInquiryWithDish}
       />
 
-      {/* Table & Order Inquiry Modal */}
+      {/* Table Reservation Inquiry Modal */}
       <InquiryModal
         isOpen={isInquiryOpen}
         onClose={() => setIsInquiryOpen(false)}
@@ -128,6 +147,16 @@ function MainApp() {
         onOpenUserBookings={handleOpenUserBookings}
         initialService={inquiryService}
         initialDish={inquiryDish}
+      />
+
+      {/* Dedicated Food Order Modal */}
+      <OrderFoodModal
+        isOpen={isOrderFoodOpen}
+        onClose={() => setIsOrderFoodOpen(false)}
+        onOpenAuth={handleOpenAuth}
+        onOpenUserBookings={handleOpenUserBookings}
+        initialCategory={orderFoodCategory}
+        initialDish={orderFoodDish}
       />
 
       {/* Firebase Auth Modal */}
@@ -138,7 +167,7 @@ function MainApp() {
         promptMessage={authPrompt}
       />
 
-      {/* User Account & Stored Bookings History Modal */}
+      {/* User Account & Stored Bookings/Orders History Modal */}
       <UserBookingsModal
         isOpen={isUserBookingsOpen}
         onClose={() => setIsUserBookingsOpen(false)}

@@ -10,13 +10,16 @@ import {
   ShieldCheck,
   Star,
   Navigation,
+  ShoppingBag,
+  CalendarCheck,
 } from 'lucide-react';
 
 interface HeroProps {
   onOpenInquiry: (serviceType?: string) => void;
+  onOpenOrderFood?: (category?: string, dishName?: string) => void;
 }
 
-export const Hero: React.FC<HeroProps> = ({ onOpenInquiry }) => {
+export const Hero: React.FC<HeroProps> = ({ onOpenInquiry, onOpenOrderFood }) => {
   const handleScrollTo = (id: string) => {
     const el = document.getElementById(id);
     if (el) {
@@ -76,39 +79,48 @@ export const Hero: React.FC<HeroProps> = ({ onOpenInquiry }) => {
             </div>
 
             {/* Primary Action Buttons */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3.5 pt-3">
+            <div className="flex flex-wrap items-center gap-3 pt-3">
+              {/* Order Food Button (Primary Call to Action) */}
+              <button
+                type="button"
+                id="hero-order-food-btn"
+                onClick={() => (onOpenOrderFood ? onOpenOrderFood() : onOpenInquiry('Online Food Delivery / Takeaway'))}
+                className="px-6 py-3.5 rounded-xl text-sm sm:text-base font-extrabold text-white bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 shadow-md shadow-emerald-800/20 hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 border border-emerald-500/30"
+              >
+                <ShoppingBag className="w-5 h-5 text-amber-300" />
+                <span>Order Food Online</span>
+              </button>
+
+              {/* Table Booking Button */}
+              <button
+                type="button"
+                id="hero-table-booking-btn"
+                onClick={() => onOpenInquiry('Dine-In Table Reservation')}
+                className="px-5 py-3.5 rounded-xl text-sm sm:text-base font-extrabold text-stone-950 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 shadow-md shadow-amber-500/20 hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 border border-amber-300"
+              >
+                <CalendarCheck className="w-5 h-5 text-stone-950" />
+                <span>Book a Table</span>
+              </button>
+
               {/* View Menu Button */}
               <button
                 type="button"
                 id="hero-view-menu-btn"
                 onClick={() => handleScrollTo('menu')}
-                className="px-7 py-4 rounded-xl text-base font-bold text-white bg-emerald-700 hover:bg-emerald-800 shadow-md shadow-emerald-800/20 hover:shadow-lg transition-all flex items-center justify-center gap-2.5 cursor-pointer group"
+                className="px-5 py-3.5 rounded-xl text-sm sm:text-base font-bold text-stone-800 bg-white hover:bg-stone-100 border border-stone-300 shadow-xs hover:shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer group"
               >
-                <Utensils className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-                <span>View Menu</span>
-                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                <Utensils className="w-4 h-4 text-emerald-700 group-hover:rotate-12 transition-transform" />
+                <span>Menu</span>
               </button>
 
               {/* Call Now Button */}
               <a
                 href={`tel:${RESTAURANT_INFO.phone}`}
                 id="hero-call-now-btn"
-                className="px-7 py-4 rounded-xl text-base font-bold text-amber-950 bg-amber-400 hover:bg-amber-500 shadow-md shadow-amber-500/20 hover:shadow-lg transition-all flex items-center justify-center gap-2.5"
+                className="px-4 py-3.5 rounded-xl text-sm sm:text-base font-bold text-stone-700 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 border border-stone-200 transition-all flex items-center justify-center gap-2"
               >
-                <Phone className="w-5 h-5 fill-current" />
-                <span>Call Now: {RESTAURANT_INFO.formattedPhone}</span>
-              </a>
-
-              {/* Directions Button */}
-              <a
-                href={RESTAURANT_INFO.googleMapsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                id="hero-directions-btn"
-                className="px-5 py-4 rounded-xl text-base font-semibold text-stone-700 hover:text-emerald-800 bg-white hover:bg-stone-50 border border-stone-300 shadow-xs transition-all flex items-center justify-center gap-2"
-              >
-                <Navigation className="w-4 h-4 text-emerald-600" />
-                <span>Get Directions</span>
+                <Phone className="w-4 h-4 text-amber-600 fill-current" />
+                <span>Call Now</span>
               </a>
             </div>
 
@@ -201,7 +213,10 @@ export const Hero: React.FC<HeroProps> = ({ onOpenInquiry }) => {
               </div>
 
               {/* Secondary Floating Mini Card */}
-              <div className="hidden sm:flex absolute -bottom-6 -left-6 bg-white p-3.5 rounded-2xl shadow-xl border border-stone-200/90 items-center gap-3 max-w-xs animate-bounce-subtle">
+              <div
+                id="hero-floating-hours-card"
+                className="hidden sm:flex absolute -bottom-16 sm:-bottom-20 -left-2 sm:-left-6 bg-white p-3.5 rounded-2xl shadow-xl border border-stone-200/90 items-center gap-3 max-w-xs z-20 transition-transform"
+              >
                 <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700 shrink-0 font-bold">
                   9-11
                 </div>
