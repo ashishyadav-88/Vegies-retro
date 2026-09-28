@@ -91,6 +91,27 @@ export interface BookingInquiry {
   customDish?: string;
   notes?: string;
   status: 'Pending' | 'Confirmed' | 'Preparing' | 'Out for Delivery' | 'Delivered' | 'Completed' | 'Cancelled';
+  paymentStatus?: 'Pending' | 'Paid' | 'Verification Pending' | 'Failed';
+  paymentMethod?: 'UPI_QR' | 'UPI_APP' | 'Cash' | 'Cash on Delivery';
+  paymentAmount?: number;
+  paymentUpiId?: string;
+  paymentPayee?: string;
+  paymentUtr?: string;
+  paymentAppUsed?: string;
+  paymentPaidAt?: string;
+  deliveryOtp?: string;
+  otpVerified?: boolean;
+  otpSentCount?: number;
+  otpLastSentAt?: string;
   createdAt: string;
+  updatedAt?: string;
   referenceId: string;
+}
+
+export interface UpiPaymentConfig {
+  upiId: string;
+  payeeName: string;
+  bankName: string;
+  phone: string;
+  merchantCode?: string;
 }

@@ -1,4 +1,4 @@
-import { RestaurantInfo, ServiceItem, WhyChooseItem } from '../types';
+import { RestaurantInfo, ServiceItem, WhyChooseItem, UpiPaymentConfig } from '../types';
 
 export const RESTAURANT_INFO: RestaurantInfo = {
   name: 'Vegies Restro',
@@ -23,6 +23,13 @@ export const RESTAURANT_INFO: RestaurantInfo = {
   },
   googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=Santosh+Bhuvan+Nalasopara+East+Palghar+Maharashtra+401209+India',
   whatsappUrl: 'https://wa.me/917028818440?text=Hello%20Vegies%20Restro,%20I%20would%20like%20to%20inquire%20about%20your%20menu%20and%20services.',
+};
+
+export const UPI_PAYMENT_CONFIG: UpiPaymentConfig = {
+  upiId: '7028818440@kotakbank',
+  payeeName: 'PARVATI DEVI',
+  bankName: 'Kotak 811',
+  phone: '7028818440',
 };
 
 export const SERVICES_DATA: ServiceItem[] = [

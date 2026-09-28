@@ -5,8 +5,13 @@ import {
   updateBookingStatusAdmin,
   deleteBookingAdmin,
   createBookingFromAdmin,
+  verifyDeliveryOtpAdmin,
+  regenerateDeliveryOtpAdmin,
+  markOtpSentAdmin,
   testFirestoreLiveConnection,
   syncAllLocalBookingsToFirestore,
+  forceRefreshAdminBookingsFromFirestore,
+  purgeLocalAdminCache,
   FirestoreStatus,
   ADMIN_EMAIL,
 } from '../services/bookingService';
@@ -17,7 +22,14 @@ import {
 import {
   formatStatusWhatsAppMessage,
   sendWhatsAppDirectInBackground,
+  shouldTriggerWhatsAppForStatus,
+  triggerDeliveryArrivalWhatsApp,
+  formatDeliveryBoyArrivalWhatsAppOtp,
 } from '../services/whatsappService';
+import {
+  triggerDeliveryArrivalSms,
+  formatDeliveryBoyArrivalSms,
+} from '../services/smsService';
 import { RESTAURANT_INFO } from '../data/restaurantData';
 import { BookingInquiry, UserProfile } from '../types';
 import { WhatsAppIcon } from './Navbar';
@@ -67,6 +79,7 @@ import {
   CheckSquare,
   Package,
   Clock3,
+  Printer,
 } from 'lucide-react';
 
 interface AdminPortalModalProps {
@@ -123,18 +136,162 @@ export const openWhatsAppDirect = (phone: string, text: string): boolean => {
   return true;
 };
 
-export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onClose }) => {
-  const { user, userProfile, isAdmin, signInAdminDirect, logout } = useAuth();
+/**
+ * Helper to extract Address from notes strictly without order details
+ */
+export const extractDeliveryAddress = (notes?: string): string | null => {
+  if (!notes || typeof notes !== 'string') return null;
+  const raw = notes.trim();
+  if (!raw) return null;
 
-  // Login form states for unauthenticated admin (empty by default for strict security)
-  const [emailInput, setEmailInput] = useState('');
+  // Split lines by newline or pipe delimiter
+  const lines = raw.split(/\r?\n|\|/).map((l) => l.trim()).filter(Boolean);
+
+  // 1. Look for explicit Delivery Address / Address line
+  const explicitAddrLine = lines.find((l) =>
+    /^(delivery\s*address|address)\s*:/i.test(l)
+  );
+
+  if (explicitAddrLine) {
+    const cleaned = explicitAddrLine.replace(/^(delivery\s*address|address)\s*:\s*/i, '').trim();
+    if (cleaned) return cleaned;
+  }
+
+  // 2. Look for regex match on single line
+  const addrMatch = raw.match(/delivery\s*address:\s*([^\r\n|]+)/i);
+  if (addrMatch && addrMatch[1]?.trim()) {
+    return addrMatch[1].trim();
+  }
+
+  const generalAddrMatch = raw.match(/address:\s*([^\r\n|]+)/i);
+  if (generalAddrMatch && generalAddrMatch[1]?.trim()) {
+    return generalAddrMatch[1].trim();
+  }
+
+  // 3. Fallback: Check lines for physical location keywords while excluding order metadata
+  const metadataKeywords = [
+    'order type:',
+    'food category:',
+    'category:',
+    'items:',
+    'subtotal:',
+    'delivery:',
+    'grand total:',
+    'total:',
+    'payment:',
+    'instructions:',
+    'instruction:',
+    'special instructions:',
+    'kot:',
+    'rider:',
+    'otp:',
+  ];
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    const isMetadata = metadataKeywords.some((prefix) => lower.startsWith(prefix));
+    if (!isMetadata) {
+      if (
+        lower.includes('flat') ||
+        lower.includes('room') ||
+        lower.includes('bldg') ||
+        lower.includes('building') ||
+        lower.includes('plot') ||
+        lower.includes('house') ||
+        lower.includes('road') ||
+        lower.includes('nagar') ||
+        lower.includes('colony') ||
+        lower.includes('apartment') ||
+        lower.includes('apt') ||
+        lower.includes('sector') ||
+        lower.includes('gali') ||
+        lower.includes('chowk') ||
+        lower.includes('lane') ||
+        lower.includes('near') ||
+        lower.includes('behind') ||
+        lower.includes('opposite') ||
+        lower.includes('opp.') ||
+        lower.includes('cross') ||
+        lower.includes('society')
+      ) {
+        return line.replace(/^(address|delivery address)\s*:\s*/i, '').trim();
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Helper to extract cooking notes / instructions without metadata or address
+ */
+export const extractCookingNotes = (notes?: string): string | null => {
+  if (!notes || typeof notes !== 'string') return null;
+  const lines = notes.split(/\r?\n|\|/).map((l) => l.trim()).filter(Boolean);
+
+  const instrLine = lines.find((l) =>
+    /^(instructions|instruction|special\s*instructions|cooking\s*notes|note|cooking\s*note)\s*:/i.test(l)
+  );
+
+  if (instrLine) {
+    const cleaned = instrLine
+      .replace(/^(instructions|instruction|special\s*instructions|cooking\s*notes|note|cooking\s*note)\s*:\s*/i, '')
+      .trim();
+    if (cleaned) return cleaned;
+  }
+
+  const metadataKeywords = [
+    'order type:',
+    'delivery address:',
+    'address:',
+    'food category:',
+    'category:',
+    'items:',
+    'subtotal:',
+    'delivery fee:',
+    'grand total:',
+    'total:',
+    'payment:',
+    'kot:',
+    'otp:',
+  ];
+
+  const candidate = lines.find((l) => {
+    const lower = l.toLowerCase();
+    return (
+      !metadataKeywords.some((prefix) => lower.startsWith(prefix)) &&
+      !lower.includes('flat') &&
+      !lower.includes('nagar') &&
+      !lower.includes('bldg') &&
+      !lower.includes('road') &&
+      !lower.includes('apartment') &&
+      !lower.includes('society') &&
+      !lower.includes('colony')
+    );
+  });
+
+  return candidate || null;
+};
+
+export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onClose }) => {
+  const { user, userProfile, isAdmin, signInAdminDirect, signInWithGoogle, logout } = useAuth();
+
+  // Login form states for unauthenticated admin (pre-filled with official admin email)
+  const [emailInput, setEmailInput] = useState(ADMIN_EMAIL);
   const [passwordInput, setPasswordInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Sync email input if empty when opening modal
+  useEffect(() => {
+    if (isOpen && !emailInput) {
+      setEmailInput(ADMIN_EMAIL);
+    }
+  }, [isOpen]);
+
   // Admin Dashboard views & data
-  const [activeTab, setActiveTab] = useState<'orders' | 'bookings' | 'all-inquiries' | 'users' | 'add-booking' | 'cloud-status' | 'metrics'>('orders');
+  const [activeTab, setActiveTab] = useState<'orders' | 'bookings' | 'all-inquiries' | 'users' | 'add-booking' | 'metrics'>('orders');
   const [bookings, setBookings] = useState<BookingInquiry[]>([]);
   const [isLoadingBookings, setIsLoadingBookings] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -146,6 +303,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onCl
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
   const [orderTypeFilter, setOrderTypeFilter] = useState<string>('all');
   const [copiedKOTId, setCopiedKOTId] = useState<string | null>(null);
+  const [viewingKitchenSlipOrder, setViewingKitchenSlipOrder] = useState<BookingInquiry | null>(null);
 
   // Users & Customer state
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
@@ -169,6 +327,14 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onCl
   const [autoWhatsAppOnStatus, setAutoWhatsAppOnStatus] = useState<boolean>(true);
   const [lastWhatsAppAlert, setLastWhatsAppAlert] = useState<WhatsAppAlertInfo | null>(null);
   const [copiedAlertMsg, setCopiedAlertMsg] = useState<boolean>(false);
+
+  // Delivery Confirmation OTP Verification Modal State
+  const [otpVerifyTarget, setOtpVerifyTarget] = useState<BookingInquiry | null>(null);
+  const [enteredOtp, setEnteredOtp] = useState<string>('');
+  const [otpVerifyError, setOtpVerifyError] = useState<string | null>(null);
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState<boolean>(false);
+  const [whatsappOtpToast, setWhatsappOtpToast] = useState<{ message: string; phone: string; otp: string } | null>(null);
+  const [isSendingArrivalOtp, setIsSendingArrivalOtp] = useState<string | null>(null);
 
   // Add Booking Form States (Admin end)
   const [newCustName, setNewCustName] = useState('');
@@ -249,6 +415,39 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onCl
     }
   };
 
+  const handleForceRefreshCloud = async () => {
+    setIsLoadingBookings(true);
+    setSyncFeedback(null);
+    try {
+      const freshList = await forceRefreshAdminBookingsFromFirestore();
+      setBookings(freshList);
+      await runCloudHealthCheck();
+      setSyncFeedback(`Real-time Cloud Sync complete! Retrieved ${freshList.length} orders directly from Firestore.`);
+    } catch (err: any) {
+      console.warn('Cloud refresh note:', err);
+      setSyncFeedback(`Cloud fetch note: ${err.message || 'Updated from cloud'}`);
+    } finally {
+      setIsLoadingBookings(false);
+    }
+  };
+
+  const handlePurgeLocalCache = async () => {
+    if (!window.confirm('Are you sure you want to purge local device cache? All live bookings will be re-downloaded directly from Cloud Firestore to ensure 100% device match.')) {
+      return;
+    }
+    setIsLoadingBookings(true);
+    try {
+      purgeLocalAdminCache();
+      const freshList = await forceRefreshAdminBookingsFromFirestore();
+      setBookings(freshList);
+      setSyncFeedback(`Local cache cleared! Downloaded ${freshList.length} genuine Cloud Firestore records.`);
+    } catch (err: any) {
+      setSyncFeedback(`Cache purge note: ${err.message}`);
+    } finally {
+      setIsLoadingBookings(false);
+    }
+  };
+
   const sampleRulesText = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -310,6 +509,7 @@ service cloud.firestore {
   };
 
   // Status Change Handler with Instant Direct WhatsApp Messaging
+  // Only sent on Order Confirmation and Delivery Confirmation per user specification
   const handleStatusChange = async (
     bookingId: string,
     newSt: BookingInquiry['status'],
@@ -321,8 +521,15 @@ service cloud.firestore {
       bookingItem ||
       bookings.find((b) => b.id === bookingId || b.referenceId === bookingId);
 
-    // Rule: Once status is marked as completed, it cannot be changed
-    if (targetBooking && targetBooking.status === 'Completed' && newSt !== 'Completed') {
+    // Rule: Once status is marked as Delivered or Completed, it cannot be changed
+    if (
+      targetBooking &&
+      (targetBooking.status === 'Delivered' || targetBooking.status === 'Completed') &&
+      newSt !== targetBooking.status
+    ) {
+      alert(
+        `Status cannot be changed: Order #${targetBooking.referenceId} has already been marked as ${targetBooking.status} and is finalized.`
+      );
       return;
     }
 
@@ -331,9 +538,12 @@ service cloud.firestore {
       return;
     }
 
-    // 1. Prepare message and trigger instant WhatsApp chat immediately upon user click
+    // Check if status qualifies for WhatsApp (Only Order Confirmation and Delivery Confirmation)
+    const shouldSendWhatsApp = shouldTriggerWhatsAppForStatus(newSt);
+
+    // 1. Prepare message and trigger WhatsApp only for confirmation and delivery
     let generatedMessage = '';
-    if (targetBooking) {
+    if (targetBooking && shouldSendWhatsApp) {
       generatedMessage = formatStatusWhatsAppMessage(
         targetBooking,
         newSt,
@@ -350,7 +560,7 @@ service cloud.firestore {
       // 2. Update status in database & local storage
       await updateBookingStatusAdmin(bookingId, newSt);
 
-      if (targetBooking) {
+      if (targetBooking && shouldSendWhatsApp) {
         // 3. Log dispatch record and call webhook/API if configured
         const dispatchRecord = await sendWhatsAppDirectInBackground(
           targetBooking,
@@ -374,6 +584,62 @@ service cloud.firestore {
       console.error('Status update failed:', e);
     } finally {
       setActionLoadingId(null);
+    }
+  };
+
+  // OTP Verification & Delivery Confirmation Handler
+  const handleVerifyOtpSubmit = async (forceOverride: boolean = false) => {
+    if (!otpVerifyTarget) return;
+    setIsVerifyingOtp(true);
+    setOtpVerifyError(null);
+
+    const bookingId = otpVerifyTarget.id || otpVerifyTarget.referenceId;
+
+    try {
+      const res = await verifyDeliveryOtpAdmin(bookingId, enteredOtp, forceOverride);
+
+      if (!res.success) {
+        setOtpVerifyError(res.message);
+        setIsVerifyingOtp(false);
+        return;
+      }
+
+      // Prepare updated booking object
+      const updatedBooking: BookingInquiry = res.booking || {
+        ...otpVerifyTarget,
+        status: 'Delivered',
+        otpVerified: true,
+      };
+
+      // Trigger WhatsApp Delivery Confirmation message
+      const deliveryMsg = formatStatusWhatsAppMessage(updatedBooking, 'Delivered');
+
+      if (autoWhatsAppOnStatus && updatedBooking.userPhone) {
+        openWhatsAppDirect(updatedBooking.userPhone, deliveryMsg);
+      }
+
+      await sendWhatsAppDirectInBackground(updatedBooking, 'Delivered');
+
+      // Set alert banner
+      setLastWhatsAppAlert({
+        bookingId: updatedBooking.id || updatedBooking.referenceId,
+        referenceId: updatedBooking.referenceId,
+        customerName: updatedBooking.userName || 'Customer',
+        customerPhone: updatedBooking.userPhone || '',
+        newStatus: 'Delivered',
+        messageText: deliveryMsg,
+        dispatched: true,
+        timestamp: Date.now(),
+      });
+
+      // Close modal
+      setOtpVerifyTarget(null);
+      setEnteredOtp('');
+      setOtpVerifyError(null);
+    } catch (err: any) {
+      setOtpVerifyError(err?.message || 'Failed to verify delivery OTP.');
+    } finally {
+      setIsVerifyingOtp(false);
     }
   };
 
@@ -425,6 +691,65 @@ service cloud.firestore {
       dispatched: true,
       timestamp: Date.now(),
     });
+  };
+
+  // Send WhatsApp OTP on Delivery Boy Arrival (Guarantees different OTP on resend)
+  const handleSendArrivalWhatsApp = async (order: BookingInquiry, forceResend: boolean = false) => {
+    if (!order.deliveryOtp) {
+      alert('No delivery confirmation OTP is available for this order.');
+      return;
+    }
+
+    const orderId = order.id || order.referenceId;
+    setIsSendingArrivalOtp(orderId);
+
+    try {
+      const isResend = forceResend || Boolean(order.otpSentCount && order.otpSentCount > 0);
+      let targetOrder: BookingInquiry = order;
+
+      if (isResend) {
+        // Regenerate a guaranteed DIFFERENT OTP on resend & update in local store & Firestore
+        const resGen = await regenerateDeliveryOtpAdmin(orderId);
+        if (resGen.updatedBooking) {
+          targetOrder = resGen.updatedBooking;
+        } else {
+          targetOrder = {
+            ...order,
+            deliveryOtp: resGen.newOtp,
+            otpSentCount: (order.otpSentCount || 1) + 1,
+            otpLastSentAt: new Date().toISOString(),
+          };
+        }
+
+        // If the OTP verification modal is open for this order, immediately update its state to the new OTP!
+        if (otpVerifyTarget && (otpVerifyTarget.id === order.id || otpVerifyTarget.referenceId === order.referenceId)) {
+          setOtpVerifyTarget(targetOrder);
+          setEnteredOtp('');
+          setOtpVerifyError(null);
+        }
+      } else {
+        await markOtpSentAdmin(orderId);
+        targetOrder = {
+          ...order,
+          otpSentCount: 1,
+          otpLastSentAt: new Date().toISOString(),
+        };
+      }
+
+      const res = await triggerDeliveryArrivalWhatsApp(targetOrder);
+      setWhatsappOtpToast({
+        message: isResend
+          ? `🔄 New Doorstep OTP (${targetOrder.deliveryOtp}) generated & resent to customer via WhatsApp!`
+          : res.message,
+        phone: targetOrder.userPhone,
+        otp: targetOrder.deliveryOtp || '',
+      });
+      setTimeout(() => setWhatsappOtpToast(null), 6000);
+    } catch (err: any) {
+      alert(`Error dispatching arrival WhatsApp OTP: ${err.message}`);
+    } finally {
+      setIsSendingArrivalOtp(null);
+    }
   };
 
   // Submit New Booking from Admin Portal
@@ -487,38 +812,6 @@ service cloud.firestore {
       st.includes('parcel') ||
       st.includes('order')
     );
-  };
-
-  // Helper to extract Address from notes
-  const extractDeliveryAddress = (notes?: string) => {
-    if (!notes) return null;
-    const match = notes.match(/Delivery Address:\s*([^|]+)/i);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    if (
-      notes.toLowerCase().includes('address') ||
-      notes.toLowerCase().includes('flat') ||
-      notes.toLowerCase().includes('room') ||
-      notes.toLowerCase().includes('bldg') ||
-      notes.toLowerCase().includes('road') ||
-      notes.toLowerCase().includes('nagar')
-    ) {
-      const parts = notes.split('|');
-      return parts[0].replace(/delivery address:/i, '').trim();
-    }
-    return null;
-  };
-
-  // Helper to extract cooking notes / instructions
-  const extractCookingNotes = (notes?: string) => {
-    if (!notes) return null;
-    const parts = notes.split('|');
-    const filtered = parts.filter((p) => !p.toLowerCase().includes('delivery address:'));
-    if (filtered.length > 0) {
-      return filtered.join(' | ').trim();
-    }
-    return null;
   };
 
   // Separate Lists
@@ -628,14 +921,20 @@ service cloud.firestore {
     const isTakeaway = order.serviceType.toLowerCase().includes('takeaway');
 
     let kot = `=====================================\n`;
-    kot += `  VEGIES RESTRO - KITCHEN ORDER TICKET\n`;
+    kot += `  ${RESTAURANT_INFO.name.toUpperCase()} - KITCHEN ORDER TICKET\n`;
     kot += `=====================================\n`;
     kot += `Order Ref: #${order.referenceId}\n`;
     kot += `Type: ${isTakeaway ? '🥡 TAKEAWAY (PARCEL)' : '🛵 HOME DELIVERY'}\n`;
-    kot += `Date/Time: ${new Date(order.createdAt).toLocaleString('en-IN', {
-      dateStyle: 'short',
-      timeStyle: 'short',
+    kot += `Order Placed Time: ${new Date(order.createdAt).toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    })}, ${new Date(order.createdAt).toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
     })}\n`;
+    kot += `Delivery / Pickup Slot: ${order.timeSlot}\n`;
     kot += `Customer: ${order.userName} (${order.userPhone})\n`;
     if (address && !isTakeaway) {
       kot += `Delivery To: ${address}\n`;
@@ -652,6 +951,25 @@ service cloud.firestore {
       kot += `SPECIAL INSTRUCTIONS: ${cookingNotes}\n`;
       kot += `-------------------------------------\n`;
     }
+    const paymentMode =
+      order.paymentMethod === 'Cash on Delivery'
+        ? 'CASH ON DELIVERY (COD)'
+        : order.paymentMethod === 'Cash'
+        ? 'CASH'
+        : order.paymentAppUsed
+        ? `UPI (${order.paymentAppUsed.toUpperCase()})`
+        : order.paymentStatus === 'Paid'
+        ? 'ONLINE UPI'
+        : order.paymentMethod || 'PAY ON DELIVERY / COUNTER';
+
+    kot += `MODE OF PAYMENT: ${paymentMode}\n`;
+    if (order.paymentStatus === 'Paid') {
+      if (order.paymentUtr) {
+        kot += `UPI REF/UTR: ${order.paymentUtr}\n`;
+      }
+      kot += `PAYEE: ${RESTAURANT_INFO.name}\n`;
+    }
+    kot += `-------------------------------------\n`;
     kot += `BILL TOTAL: ${order.guests || 'N/A'}\n`;
     kot += `STATUS: ${order.status.toUpperCase()}\n`;
     kot += `=====================================\n`;
@@ -766,29 +1084,33 @@ service cloud.firestore {
                   <label className="block text-xs font-bold text-stone-700 mb-1">
                     Admin Password
                   </label>
-                  <div className="relative">
+                  <div className="relative flex items-center">
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
                       value={passwordInput}
                       onChange={(e) => setPasswordInput(e.target.value)}
-                      placeholder="Enter admin password"
+                      placeholder="Enter manager password or PIN"
                       autoComplete="current-password"
                       className="w-full px-3.5 py-2.5 rounded-xl bg-stone-50 border border-stone-200 text-xs text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 pr-10"
                     />
                     <button
                       type="button"
+                      id="admin-password-toggle-btn"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 p-1"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-500 hover:text-stone-800 p-1.5 rounded-lg hover:bg-stone-200/60 transition-colors z-10 cursor-pointer flex items-center justify-center"
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
                     >
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-2 space-y-2.5">
                   <button
                     type="submit"
+                    id="admin-submit-login-btn"
                     disabled={isLoggingIn}
                     className="w-full py-3.5 rounded-xl bg-stone-900 hover:bg-black disabled:opacity-50 text-white font-bold text-xs shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
                   >
@@ -800,6 +1122,49 @@ service cloud.firestore {
                         <span>Sign In to Admin Portal</span>
                       </>
                     )}
+                  </button>
+
+                  <div className="relative flex py-1 items-center">
+                    <div className="flex-grow border-t border-stone-200"></div>
+                    <span className="flex-shrink mx-3 text-[11px] text-stone-400 font-medium uppercase">Or</span>
+                    <div className="flex-grow border-t border-stone-200"></div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        setIsLoggingIn(true);
+                        setLoginError(null);
+                        await signInWithGoogle();
+                      } catch (err: any) {
+                        console.error('Google sign-in error:', err);
+                        setLoginError(err.message || 'Google sign-in failed');
+                      } finally {
+                        setIsLoggingIn(false);
+                      }
+                    }}
+                    className="w-full py-3 px-4 rounded-xl border border-stone-300 hover:bg-stone-50 active:scale-98 text-stone-700 font-bold text-xs transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-2xs"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                    <span>Sign in with Google (Parvati Yadav)</span>
                   </button>
                 </div>
               </form>
@@ -815,11 +1180,11 @@ service cloud.firestore {
           /* ======================================================== */
           <div className="flex-1 flex flex-col overflow-hidden bg-stone-50">
             {/* Top Navigation & KPI Summary */}
-            <div className="p-4 sm:p-5 bg-white border-b border-stone-200 space-y-4 shrink-0">
-              {/* KPIs dynamically adjusted by active tab */}
+            <div className="p-3 sm:p-4 md:p-5 bg-white border-b border-stone-200 space-y-3 sm:space-y-4 shrink-0">
+              {/* KPIs dynamically adjusted by active tab with smooth horizontal sliding across mobile, tablet and desktop */}
               {activeTab === 'orders' ? (
-                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5">
-                  <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 flex flex-col">
+                <div className="flex overflow-x-auto pb-1.5 gap-2 sm:gap-2.5 no-scrollbar scroll-smooth w-full select-none xl:grid xl:grid-cols-6">
+                  <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-emerald-800 font-semibold flex items-center gap-1">
                       <ShoppingBag className="w-3 h-3 text-emerald-600" />
                       Total Orders
@@ -827,7 +1192,7 @@ service cloud.firestore {
                     <span className="text-xl font-extrabold text-emerald-950">{orderTotalCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] text-amber-800 font-semibold">Pending Review</span>
                       {orderPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />}
@@ -835,12 +1200,12 @@ service cloud.firestore {
                     <span className="text-xl font-extrabold text-amber-900">{orderPendingCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-emerald-800 font-semibold">Confirmed</span>
                     <span className="text-xl font-extrabold text-emerald-900">{orderConfirmedCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-orange-50 border border-orange-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-orange-50 border border-orange-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] text-orange-800 font-semibold flex items-center gap-1">
                         <ChefHat className="w-3 h-3 text-orange-600" />
@@ -851,7 +1216,7 @@ service cloud.firestore {
                     <span className="text-xl font-extrabold text-orange-900">{orderPreparingCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-indigo-50 border border-indigo-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-indigo-50 border border-indigo-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-indigo-800 font-semibold flex items-center gap-1">
                       <Bike className="w-3 h-3 text-indigo-600" />
                       On Delivery
@@ -859,19 +1224,19 @@ service cloud.firestore {
                     <span className="text-xl font-extrabold text-indigo-900">{orderOutForDeliveryCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-teal-50 border border-teal-200 flex flex-col col-span-2 sm:col-span-1">
+                  <div className="p-3 rounded-2xl bg-teal-50 border border-teal-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-teal-800 font-semibold">Delivered / Done</span>
                     <span className="text-xl font-extrabold text-teal-900">{orderDeliveredCount}</span>
                   </div>
                 </div>
               ) : activeTab === 'bookings' ? (
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col">
+                <div className="flex overflow-x-auto pb-1.5 gap-2 sm:gap-2.5 no-scrollbar scroll-smooth w-full select-none xl:grid xl:grid-cols-5">
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-stone-500 font-semibold">Table Bookings</span>
                     <span className="text-xl font-extrabold text-stone-900">{tableTotalCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] text-amber-800 font-semibold">Pending Review</span>
                       {tablePendingCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />}
@@ -879,29 +1244,29 @@ service cloud.firestore {
                     <span className="text-xl font-extrabold text-amber-900">{tablePendingCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-emerald-800 font-semibold">Confirmed Tables</span>
                     <span className="text-xl font-extrabold text-emerald-900">{tableConfirmedCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-blue-800 font-semibold">Completed Dine-in</span>
                     <span className="text-xl font-extrabold text-blue-900">{tableCompletedCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col col-span-2 sm:col-span-1">
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-rose-700 font-semibold">Cancelled</span>
                     <span className="text-xl font-extrabold text-rose-800">{tableCancelledCount}</span>
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col">
+                <div className="flex overflow-x-auto pb-1.5 gap-2 sm:gap-2.5 no-scrollbar scroll-smooth w-full select-none xl:grid xl:grid-cols-5">
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-stone-500 font-semibold">Total Inquiries</span>
                     <span className="text-xl font-extrabold text-stone-900">{totalCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] text-amber-800 font-semibold">Pending Action</span>
                       {pendingCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />}
@@ -909,31 +1274,31 @@ service cloud.firestore {
                     <span className="text-xl font-extrabold text-amber-900">{pendingCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-emerald-800 font-semibold">Confirmed</span>
                     <span className="text-xl font-extrabold text-emerald-900">{confirmedCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col">
+                  <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-blue-800 font-semibold">Completed / Done</span>
                     <span className="text-xl font-extrabold text-blue-900">{completedCount}</span>
                   </div>
 
-                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col col-span-2 sm:col-span-1">
+                  <div className="p-3 rounded-2xl bg-stone-50 border border-stone-200 flex flex-col shrink-0 min-w-[140px] sm:min-w-[160px] flex-1">
                     <span className="text-[11px] text-rose-700 font-semibold">Cancelled</span>
                     <span className="text-xl font-extrabold text-rose-800">{cancelledCount}</span>
                   </div>
                 </div>
               )}
 
-              {/* Navigation Tabs & Actions */}
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                <div className="flex flex-wrap items-center gap-1.5 p-1 bg-stone-100 rounded-2xl border border-stone-200">
+              {/* Navigation Tabs with smooth touch sliding across mobile and tablet */}
+              <div className="w-full pt-1">
+                <div className="flex items-center gap-1.5 p-1 bg-stone-100 rounded-2xl border border-stone-200 overflow-x-auto no-scrollbar scroll-smooth w-full select-none">
                   {/* Tab: Food Orders (Dedicated) */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('orders')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    className={`shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeTab === 'orders'
                         ? 'bg-emerald-600 text-white shadow-xs'
                         : 'text-stone-700 hover:text-stone-900 bg-white/60 hover:bg-white'
@@ -950,7 +1315,7 @@ service cloud.firestore {
                   <button
                     type="button"
                     onClick={() => setActiveTab('bookings')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    className={`shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeTab === 'bookings'
                         ? 'bg-white text-emerald-900 shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
@@ -964,7 +1329,7 @@ service cloud.firestore {
                   <button
                     type="button"
                     onClick={() => setActiveTab('all-inquiries')}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                    className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                       activeTab === 'all-inquiries'
                         ? 'bg-white text-stone-900 shadow-xs font-bold'
                         : 'text-stone-500 hover:text-stone-800'
@@ -977,7 +1342,7 @@ service cloud.firestore {
                   <button
                     type="button"
                     onClick={() => setActiveTab('users')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    className={`shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeTab === 'users'
                         ? 'bg-white text-emerald-900 shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
@@ -991,7 +1356,7 @@ service cloud.firestore {
                   <button
                     type="button"
                     onClick={() => setActiveTab('add-booking')}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                    className={`shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
                       activeTab === 'add-booking'
                         ? 'bg-stone-900 text-white shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
@@ -1001,31 +1366,11 @@ service cloud.firestore {
                     <span>+ New Entry</span>
                   </button>
 
-                  {/* Tab: Cloud Status */}
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('cloud-status')}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                      activeTab === 'cloud-status'
-                        ? 'bg-amber-500 text-stone-950 shadow-xs'
-                        : 'text-stone-600 hover:text-stone-900'
-                    }`}
-                  >
-                    <Cloud className="w-3.5 h-3.5" />
-                    <span className="hidden md:inline">Database & Sync</span>
-                    {firestoreStatus && !firestoreStatus.connected && (
-                      <span className="w-2 h-2 rounded-full bg-rose-500" title="Firestore not accepting writes" />
-                    )}
-                    {firestoreStatus && firestoreStatus.connected && (
-                      <span className="w-2 h-2 rounded-full bg-emerald-500" title="Firestore connected" />
-                    )}
-                  </button>
-
                   {/* Tab: Analytics */}
                   <button
                     type="button"
                     onClick={() => setActiveTab('metrics')}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all hidden lg:flex items-center gap-1 cursor-pointer ${
+                    className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
                       activeTab === 'metrics'
                         ? 'bg-white text-emerald-900 shadow-xs'
                         : 'text-stone-600 hover:text-stone-900'
@@ -1033,25 +1378,6 @@ service cloud.firestore {
                   >
                     <TrendingUp className="w-3.5 h-3.5" />
                     <span>Analytics</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-stone-500 hidden md:inline">
-                    Admin: <strong>{ADMIN_EMAIL}</strong>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsLoadingBookings(true);
-                      setTimeout(() => setIsLoadingBookings(false), 500);
-                    }}
-                    className="p-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 transition-colors cursor-pointer"
-                    title="Refresh Data"
-                  >
-                    <RefreshCw
-                      className={`w-4 h-4 ${isLoadingBookings ? 'animate-spin text-emerald-600' : ''}`}
-                    />
                   </button>
                 </div>
               </div>
@@ -1064,38 +1390,32 @@ service cloud.firestore {
               {/* ======================================================== */}
               {activeTab === 'orders' && (
                 <div className="space-y-4">
-                  {/* WhatsApp Automation & Quick Controls Bar */}
-                  <div className="bg-emerald-50/80 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                        <WhatsAppIcon className="w-4 h-4 fill-white" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-bold text-emerald-950">
-                            ⚡ Instant Order WhatsApp Dispatcher
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full bg-emerald-200/70 text-emerald-900 text-[10px] font-extrabold flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                            Live Realtime Alerts
-                          </span>
+                  {/* WhatsApp Arrival OTP Toast Notification */}
+                  {whatsappOtpToast && (
+                    <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-950 via-stone-900 to-emerald-950 text-white shadow-lg border border-emerald-500/50 animate-in fade-in flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center text-emerald-400">
+                          <WhatsAppIcon className="w-4 h-4 fill-current" />
                         </div>
-                        <p className="text-[11px] text-emerald-800/90 leading-tight">
-                          Clicking status updates (Confirm, In Kitchen, Out for Delivery, Delivered) instantly alerts customer on WhatsApp with reference ID and ETA!
-                        </p>
+                        <div>
+                          <span className="text-xs font-bold text-emerald-300 block flex items-center gap-1.5">
+                            <span>{whatsappOtpToast.message || '🛵 Delivery Boy Arrival WhatsApp OTP Dispatched!'}</span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                          </span>
+                          <p className="text-[11px] text-stone-300">
+                            Sent to <strong className="text-white">{whatsappOtpToast.phone}</strong> • Doorstep OTP: <span className="font-mono font-bold text-emerald-300 bg-black/40 px-1.5 py-0.5 rounded border border-emerald-500/40">{whatsappOtpToast.otp}</span>
+                          </p>
+                        </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => setWhatsappOtpToast(null)}
+                        className="w-6 h-6 rounded-full bg-white/10 hover:bg-white/20 text-stone-300 text-xs flex items-center justify-center cursor-pointer"
+                      >
+                        ✕
+                      </button>
                     </div>
-
-                    <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-stone-800 bg-white px-3 py-1.5 rounded-xl border border-emerald-300 shadow-2xs hover:bg-emerald-50/50 transition-colors shrink-0">
-                      <input
-                        type="checkbox"
-                        checked={autoWhatsAppOnStatus}
-                        onChange={(e) => setAutoWhatsAppOnStatus(e.target.checked)}
-                        className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600"
-                      />
-                      <span>Auto-send on status click</span>
-                    </label>
-                  </div>
+                  )}
 
                   {/* WhatsApp Last Notification Banner */}
                   {lastWhatsAppAlert && (
@@ -1335,11 +1655,38 @@ service cloud.firestore {
                                   <span>{order.status}</span>
                                 </span>
 
-                                <span className="text-[11px] text-stone-400 hidden sm:inline">
-                                  • {new Date(order.createdAt).toLocaleString('en-IN', {
-                                    dateStyle: 'medium',
-                                    timeStyle: 'short',
-                                  })}
+                                {/* Payment Status Badge */}
+                                {order.paymentStatus === 'Paid' ? (
+                                  <span
+                                    className="px-2.5 py-0.5 rounded-full border border-blue-300 bg-blue-100 text-blue-900 text-[11px] font-extrabold flex items-center gap-1"
+                                    title={`Paid via ${order.paymentAppUsed || 'UPI'} • UTR: ${order.paymentUtr || 'Recorded'} • Payee: ${order.paymentPayee || 'PARVATI DEVI'}`}
+                                  >
+                                    <ShieldCheck className="w-3 h-3 text-blue-700" />
+                                    <span>PAID {order.paymentAmount ? `₹${order.paymentAmount}` : ''}</span>
+                                    {order.paymentUtr && (
+                                      <span className="font-mono font-semibold text-[10px] text-blue-800">
+                                        ({order.paymentUtr})
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-800 text-[10px] font-bold">
+                                    🟡 Payment Pending
+                                  </span>
+                                )}
+
+                                <span className="text-[11px] text-stone-600 font-semibold flex items-center gap-1 bg-stone-100 px-2 py-0.5 rounded-md border border-stone-200">
+                                  <Clock className="w-3 h-3 text-amber-600 shrink-0" />
+                                  <span>
+                                    {new Date(order.createdAt).toLocaleTimeString('en-IN', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                      hour12: true,
+                                    })}, {new Date(order.createdAt).toLocaleDateString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                    })}
+                                  </span>
                                 </span>
                               </div>
 
@@ -1348,12 +1695,12 @@ service cloud.firestore {
                                 {/* Kitchen Ticket (KOT) */}
                                 <button
                                   type="button"
-                                  onClick={() => handleCopyKOT(order)}
+                                  onClick={() => setViewingKitchenSlipOrder(order)}
                                   className="px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                                  title="Copy Kitchen Order Ticket (KOT) to clipboard"
+                                  title="View and print Kitchen Slip (KOT)"
                                 >
                                   <Receipt className="w-3.5 h-3.5 text-stone-600" />
-                                  <span>{copiedKOTId === (order.id || order.referenceId) ? 'KOT Copied! ✓' : 'Kitchen Slip'}</span>
+                                  <span>Kitchen Slip</span>
                                 </button>
 
                                 {/* WhatsApp Customer */}
@@ -1410,9 +1757,15 @@ service cloud.firestore {
                                     {order.userEmail}
                                   </div>
                                 )}
-                                <div className="pt-1 text-stone-600 flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-stone-400" />
-                                  <span>Slot: <strong>{order.timeSlot}</strong></span>
+                                <div className="pt-1.5 space-y-1 text-stone-600">
+                                  <div className="flex items-center gap-1.5 text-stone-800 font-medium">
+                                    <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                    <span>Placed: <strong>{new Date(order.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}, {new Date(order.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</strong></span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-stone-600">
+                                    <Calendar className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+                                    <span>Slot: <strong>{order.timeSlot}</strong></span>
+                                  </div>
                                 </div>
                               </div>
 
@@ -1540,129 +1893,199 @@ service cloud.firestore {
                               </div>
                             </div>
 
-                            {/* Order Card Bottom: Comprehensive Status Pipeline Update Buttons */}
-                            <div className="pt-2.5 border-t border-stone-100 flex flex-wrap items-center justify-between gap-2">
-                              <span className="text-xs text-stone-600 font-bold flex items-center gap-1">
-                                <span>Order Status Action:</span>
-                              </span>
+                            {/* Order Card Bottom: Comprehensive Status Pipeline Update Buttons or Locked Banner */}
+                            {order.status === 'Delivered' || order.status === 'Completed' ? (
+                              <div className="pt-2.5 border-t border-emerald-100 flex flex-wrap items-center justify-between gap-2 bg-emerald-50/70 p-3 rounded-xl border border-emerald-200/80">
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                                    <Lock className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <div className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                                      <span>Order Delivered to Customer</span>
+                                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-extrabold border border-emerald-300">
+                                        Status Locked 🔒
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-emerald-800/90">
+                                      Order has been successfully handed over to customer. Status is finalized and cannot be modified.
+                                    </p>
+                                  </div>
+                                </div>
 
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                {/* 1. Pending */}
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || order.status === 'Pending'}
-                                  onClick={() =>
-                                    handleStatusChange(order.id || order.referenceId, 'Pending', order)
-                                  }
-                                  className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
-                                    order.status === 'Pending'
-                                      ? 'bg-amber-100 text-amber-900 border border-amber-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                      : 'bg-amber-50 hover:bg-amber-100 text-amber-900 cursor-pointer active:scale-95'
-                                  }`}
-                                  title="Mark order as pending review"
-                                >
-                                  <span>{order.status === 'Pending' ? '● Pending' : 'Pending'}</span>
-                                </button>
-
-                                {/* 2. Confirm Order */}
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || order.status === 'Confirmed'}
-                                  onClick={() =>
-                                    handleStatusChange(order.id || order.referenceId, 'Confirmed', order)
-                                  }
-                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
-                                    order.status === 'Confirmed'
-                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                      : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
-                                  }`}
-                                  title="Confirm order & notify customer on WhatsApp"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>{order.status === 'Confirmed' ? '✓ Confirmed' : 'Confirm'}</span>
-                                </button>
-
-                                {/* 3. In Kitchen (Preparing) */}
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || order.status === 'Preparing'}
-                                  onClick={() =>
-                                    handleStatusChange(order.id || order.referenceId, 'Preparing', order)
-                                  }
-                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
-                                    order.status === 'Preparing'
-                                      ? 'bg-orange-100 text-orange-900 border border-orange-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                      : 'bg-orange-600 hover:bg-orange-700 text-white cursor-pointer active:scale-95'
-                                  }`}
-                                  title="Send to kitchen: Food is being prepared"
-                                >
-                                  <ChefHat className="w-3.5 h-3.5" />
-                                  <span>{order.status === 'Preparing' ? '👨‍🍳 Preparing...' : '👨‍🍳 In Kitchen'}</span>
-                                </button>
-
-                                {/* 4. Out for Delivery / Ready for Pickup */}
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || order.status === 'Out for Delivery'}
-                                  onClick={() =>
-                                    handleStatusChange(order.id || order.referenceId, 'Out for Delivery', order)
-                                  }
-                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
-                                    order.status === 'Out for Delivery'
-                                      ? 'bg-indigo-100 text-indigo-900 border border-indigo-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                      : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:scale-95'
-                                  }`}
-                                  title={isTakeaway ? 'Mark food ready for counter pickup' : 'Mark order out for delivery with rider'}
-                                >
-                                  {isTakeaway ? (
-                                    <>
-                                      <Package className="w-3.5 h-3.5" />
-                                      <span>{order.status === 'Out for Delivery' ? '🥡 Ready for Pickup' : '🥡 Ready for Pickup'}</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Bike className="w-3.5 h-3.5" />
-                                      <span>{order.status === 'Out for Delivery' ? '🛵 Out for Delivery' : '🛵 Out for Delivery'}</span>
-                                    </>
-                                  )}
-                                </button>
-
-                                {/* 5. Delivered / Completed */}
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || order.status === 'Delivered' || order.status === 'Completed'}
-                                  onClick={() =>
-                                    handleStatusChange(order.id || order.referenceId, 'Delivered', order)
-                                  }
-                                  className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
-                                    order.status === 'Delivered' || order.status === 'Completed'
-                                      ? 'bg-teal-100 text-teal-900 border border-teal-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                      : 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer active:scale-95'
-                                  }`}
-                                  title="Mark order as delivered & thank customer"
-                                >
-                                  <CheckCircle2 className="w-3.5 h-3.5" />
-                                  <span>{order.status === 'Delivered' || order.status === 'Completed' ? '✅ Delivered' : 'Delivered'}</span>
-                                </button>
-
-                                {/* 6. Cancelled */}
-                                <button
-                                  type="button"
-                                  disabled={isActionBusy || order.status === 'Cancelled'}
-                                  onClick={() =>
-                                    handleStatusChange(order.id || order.referenceId, 'Cancelled', order)
-                                  }
-                                  className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
-                                    order.status === 'Cancelled'
-                                      ? 'bg-rose-100 text-rose-800 border border-rose-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                      : 'bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer active:scale-95'
-                                  }`}
-                                  title="Cancel order and notify customer"
-                                >
-                                  <span>{order.status === 'Cancelled' ? '✕ Cancelled' : 'Cancel'}</span>
-                                </button>
+                                <div className="flex items-center gap-1.5 text-xs text-emerald-900 font-bold bg-white/90 px-3 py-1.5 rounded-xl border border-emerald-200 shadow-2xs">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                  <span>Delivered &amp; Finalized</span>
+                                </div>
                               </div>
-                            </div>
+                            ) : (
+                              <div className="pt-2.5 border-t border-stone-100 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs text-stone-600 font-bold flex items-center gap-1">
+                                  <span>Order Status Action:</span>
+                                </span>
+
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {/* 1. Pending */}
+                                  <button
+                                    type="button"
+                                    disabled={isActionBusy || order.status === 'Pending'}
+                                    onClick={() =>
+                                      handleStatusChange(order.id || order.referenceId, 'Pending', order)
+                                    }
+                                    className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
+                                      order.status === 'Pending'
+                                        ? 'bg-amber-100 text-amber-900 border border-amber-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-amber-50 hover:bg-amber-100 text-amber-900 cursor-pointer active:scale-95'
+                                    }`}
+                                    title="Mark order as pending review"
+                                  >
+                                    <span>{order.status === 'Pending' ? '● Pending' : 'Pending'}</span>
+                                  </button>
+
+                                  {/* 2. Confirm Order */}
+                                  <button
+                                    type="button"
+                                    disabled={isActionBusy || order.status === 'Confirmed'}
+                                    onClick={() =>
+                                      handleStatusChange(order.id || order.referenceId, 'Confirmed', order)
+                                    }
+                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                      order.status === 'Confirmed'
+                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                    title="Confirm order & notify customer on WhatsApp"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{order.status === 'Confirmed' ? '✓ Confirmed' : 'Confirm'}</span>
+                                  </button>
+
+                                  {/* 3. In Kitchen (Preparing) */}
+                                  <button
+                                    type="button"
+                                    disabled={isActionBusy || order.status === 'Preparing'}
+                                    onClick={() =>
+                                      handleStatusChange(order.id || order.referenceId, 'Preparing', order)
+                                    }
+                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                      order.status === 'Preparing'
+                                        ? 'bg-orange-100 text-orange-900 border border-orange-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-orange-600 hover:bg-orange-700 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                    title="Send to kitchen: Food is being prepared"
+                                  >
+                                    <ChefHat className="w-3.5 h-3.5" />
+                                    <span>{order.status === 'Preparing' ? '👨‍🍳 Preparing...' : '👨‍🍳 In Kitchen'}</span>
+                                  </button>
+
+                                  {/* 4. Out for Delivery / Ready for Pickup */}
+                                  <button
+                                    type="button"
+                                    disabled={isActionBusy || order.status === 'Out for Delivery'}
+                                    onClick={() =>
+                                      handleStatusChange(order.id || order.referenceId, 'Out for Delivery', order)
+                                    }
+                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                      order.status === 'Out for Delivery'
+                                        ? 'bg-indigo-100 text-indigo-900 border border-indigo-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                    title={isTakeaway ? 'Mark food ready for counter pickup' : 'Mark order out for delivery with rider'}
+                                  >
+                                    {isTakeaway ? (
+                                      <>
+                                        <Package className="w-3.5 h-3.5" />
+                                        <span>{order.status === 'Out for Delivery' ? '🥡 Ready for Pickup' : '🥡 Ready for Pickup'}</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Bike className="w-3.5 h-3.5" />
+                                        <span>{order.status === 'Out for Delivery' ? '🛵 Out for Delivery' : '🛵 Out for Delivery'}</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  {/* Rider Arrival WhatsApp OTP Button */}
+                                  {!isTakeaway && order.deliveryOtp && order.status !== 'Delivered' && order.status !== 'Completed' && order.status !== 'Cancelled' && (
+                                    <button
+                                      type="button"
+                                      disabled={isSendingArrivalOtp === (order.id || order.referenceId)}
+                                      onClick={() => handleSendArrivalWhatsApp(order, Boolean(order.otpSentCount && order.otpSentCount > 0))}
+                                      className={`px-3 py-1 rounded-xl text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-all active:scale-95 cursor-pointer border disabled:opacity-60 ${
+                                        order.otpSentCount && order.otpSentCount > 0
+                                          ? 'bg-amber-600 hover:bg-amber-700 border-amber-500'
+                                          : 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500'
+                                      }`}
+                                      title={
+                                        order.otpSentCount && order.otpSentCount > 0
+                                          ? `Resend a new different doorstep WhatsApp OTP to customer (Sent ${order.otpSentCount} time${order.otpSentCount > 1 ? 's' : ''})`
+                                          : `Send doorstep WhatsApp OTP (${order.deliveryOtp}) directly to customer on delivery boy arrival`
+                                      }
+                                    >
+                                      {isSendingArrivalOtp === (order.id || order.referenceId) ? (
+                                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                      ) : (
+                                        <WhatsAppIcon className="w-3.5 h-3.5 fill-current" />
+                                      )}
+                                      <span>
+                                        {isSendingArrivalOtp === (order.id || order.referenceId)
+                                          ? 'Sending OTP...'
+                                          : order.otpSentCount && order.otpSentCount > 0
+                                          ? '🔄 Resend WhatsApp OTP'
+                                          : '🛵 Send WhatsApp OTP'}
+                                      </span>
+                                    </button>
+                                  )}
+
+                                  {/* 5. Delivered / OTP Verification */}
+                                  <button
+                                    type="button"
+                                    disabled={isActionBusy || order.status === 'Delivered' || order.status === 'Completed'}
+                                    onClick={() => {
+                                      if (order.deliveryOtp && !order.otpVerified && order.status !== 'Delivered') {
+                                        setOtpVerifyTarget(order);
+                                        setEnteredOtp('');
+                                        setOtpVerifyError(null);
+                                      } else {
+                                        handleStatusChange(order.id || order.referenceId, 'Delivered', order);
+                                      }
+                                    }}
+                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                      order.status === 'Delivered' || order.status === 'Completed'
+                                        ? 'bg-teal-100 text-teal-900 border border-teal-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                    title="Verify Customer Delivery OTP and mark as Delivered"
+                                  >
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    <span>
+                                      {order.status === 'Delivered' || order.status === 'Completed'
+                                        ? '✅ Delivered'
+                                        : order.deliveryOtp
+                                        ? '🔐 Verify OTP & Deliver'
+                                        : 'Delivered'}
+                                    </span>
+                                  </button>
+
+                                  {/* 6. Cancelled */}
+                                  <button
+                                    type="button"
+                                    disabled={isActionBusy || order.status === 'Cancelled'}
+                                    onClick={() =>
+                                      handleStatusChange(order.id || order.referenceId, 'Cancelled', order)
+                                    }
+                                    className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all ${
+                                      order.status === 'Cancelled'
+                                        ? 'bg-rose-100 text-rose-800 border border-rose-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer active:scale-95'
+                                    }`}
+                                    title="Cancel order and notify customer"
+                                  >
+                                    <span>{order.status === 'Cancelled' ? '✕ Cancelled' : 'Cancel'}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1799,11 +2222,18 @@ service cloud.firestore {
                                   {b.status === 'Completed' && <Lock className="w-3 h-3 text-blue-700" />}
                                   <span>{b.status}</span>
                                 </span>
-                                <span className="text-[11px] text-stone-400 hidden sm:inline">
-                                  • {new Date(b.createdAt).toLocaleString('en-IN', {
-                                    dateStyle: 'medium',
-                                    timeStyle: 'short',
-                                  })}
+                                <span className="text-[11px] text-stone-600 font-semibold flex items-center gap-1 bg-stone-100 px-2 py-0.5 rounded-md border border-stone-200">
+                                  <Clock className="w-3 h-3 text-amber-600 shrink-0" />
+                                  <span>
+                                    {new Date(b.createdAt).toLocaleTimeString('en-IN', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                      hour12: true,
+                                    })}, {new Date(b.createdAt).toLocaleDateString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                    })}
+                                  </span>
                                 </span>
                               </div>
 
@@ -1874,9 +2304,13 @@ service cloud.firestore {
                                   <Users className="w-3 h-3 text-stone-400" />
                                   <span>{b.guests}</span>
                                 </div>
-                                <div className="text-stone-600 flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-stone-400" />
-                                  <span>{b.timeSlot}</span>
+                                <div className="text-stone-700 flex items-center gap-1.5 font-medium">
+                                  <Clock className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                  <span>Reserved Slot: <strong>{b.timeSlot}</strong></span>
+                                </div>
+                                <div className="text-stone-500 flex items-center gap-1.5 text-[11px]">
+                                  <Calendar className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+                                  <span>Booked: <strong>{new Date(b.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}, {new Date(b.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</strong></span>
                                 </div>
                               </div>
 
@@ -2652,211 +3086,6 @@ service cloud.firestore {
                 </div>
               )}
 
-              {/* TAB 3: CLOUD FIRESTORE DIAGNOSTIC & SYNC */}
-              {activeTab === 'cloud-status' && (
-                <div className="space-y-5 max-w-3xl mx-auto">
-                  {/* Status Banner */}
-                  <div className="p-5 rounded-3xl bg-white border border-stone-200 shadow-sm space-y-4">
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-stone-100 pb-4">
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-                            firestoreStatus?.connected
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-900'
-                          }`}
-                        >
-                          <Database className="w-6 h-6" />
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-bold text-stone-900 text-base">
-                              Firebase Cloud Firestore Status
-                            </h4>
-                            {firestoreStatus?.connected ? (
-                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold">
-                                Connected & Ready
-                              </span>
-                            ) : (
-                              <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold">
-                                Offline / Action Required
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-stone-500">
-                            Project ID: <span className="font-mono font-bold text-stone-700">vegies-restro</span>
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={isCheckingCloud}
-                          onClick={runCloudHealthCheck}
-                          className="px-3.5 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <RefreshCw className={`w-3.5 h-3.5 ${isCheckingCloud ? 'animate-spin text-emerald-600' : ''}`} />
-                          <span>Test Live Connection</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Diagnostic Result */}
-                    {firestoreStatus && (
-                      <div
-                        className={`p-4 rounded-2xl text-xs space-y-2 border ${
-                          firestoreStatus.connected
-                            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                            : 'bg-amber-50 border-amber-200 text-amber-950'
-                        }`}
-                      >
-                        <div className="flex items-start gap-2">
-                          {firestoreStatus.connected ? (
-                            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                          ) : (
-                            <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                          )}
-                          <div className="space-y-1">
-                            <div className="font-bold">
-                              {firestoreStatus.connected
-                                ? 'Firestore read & write connection verified successfully!'
-                                : `Diagnostic Alert: ${firestoreStatus.errorCode || 'Access Blocked'}`}
-                            </div>
-                            <div className="text-stone-600 leading-relaxed">
-                              {firestoreStatus.details}
-                            </div>
-                            {firestoreStatus.error && !firestoreStatus.connected && (
-                              <div className="p-2 bg-white/80 rounded-lg font-mono text-[11px] text-rose-800 border border-rose-200">
-                                {firestoreStatus.error}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Push Sync Button */}
-                    <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-bold text-stone-900 flex items-center gap-1.5">
-                          <UploadCloud className="w-4 h-4 text-emerald-600" />
-                          <span>Push All Local Data (Bookings & Users) to Firestore</span>
-                        </div>
-                        <p className="text-[11px] text-stone-500">
-                          Transfer all {bookings.length} reservations and {usersList.length} registered customer profiles directly into your Cloud Firestore database collections.
-                        </p>
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={isSyncingCloud}
-                        onClick={handleSyncToFirestore}
-                        className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-2 shadow-xs transition-colors cursor-pointer shrink-0"
-                      >
-                        {isSyncingCloud ? (
-                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                          <>
-                            <UploadCloud className="w-4 h-4" />
-                            <span>Sync All ({bookings.length + usersList.length} Records)</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {syncFeedback && (
-                      <div className="p-3 bg-stone-100 rounded-xl text-xs font-semibold text-stone-800 flex items-center gap-2">
-                        <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
-                        <span>{syncFeedback}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Why data might not appear & How to resolve */}
-                  <div className="p-5 rounded-3xl bg-white border border-stone-200 shadow-sm space-y-4">
-                    <h5 className="font-bold text-stone-900 text-sm flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                      <span>Why Data Might Not Appear in Your Firebase Console</span>
-                    </h5>
-
-                    <div className="space-y-3 text-xs text-stone-600">
-                      <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200 space-y-1.5">
-                        <span className="font-bold text-stone-900 block">
-                          1. Firestore Security Rules are in "Locked" or Expired Mode (Most Common)
-                        </span>
-                        <p>
-                          When a new Firebase project is created, Firestore by default rejects all write attempts with <code>permission-denied</code> until rules are configured. Our application protects user data with high-speed local backups, so the app still functions seamlessly.
-                        </p>
-                        <div className="pt-2">
-                          <span className="font-bold text-stone-800 text-[11px]">How to enable:</span>
-                          <ol className="list-decimal pl-5 space-y-1 text-stone-600 mt-1">
-                            <li>
-                              Open{' '}
-                              <a
-                                href="https://console.firebase.google.com/project/vegies-restro/firestore/rules"
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-emerald-700 font-bold underline inline-flex items-center gap-0.5"
-                              >
-                                Firebase Console Rules Tab <ExternalLink className="w-3 h-3 inline" />
-                              </a>
-                            </li>
-                            <li>Paste the security rules below and click <strong>Publish</strong>.</li>
-                          </ol>
-                        </div>
-                      </div>
-
-                      <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200 space-y-1.5">
-                        <span className="font-bold text-stone-900 block">
-                          2. Cloud Firestore Database Not Created Yet
-                        </span>
-                        <p>
-                          If you haven't initialized Firestore yet, go to{' '}
-                          <a
-                            href="https://console.firebase.google.com/project/vegies-restro/firestore"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-emerald-700 font-bold underline inline-flex items-center gap-0.5"
-                          >
-                            Firebase Console &rarr; Firestore Database <ExternalLink className="w-3 h-3 inline" />
-                          </a>{' '}
-                          and click <strong>"Create database"</strong> (Start in production or test mode).
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Copyable Rules Snippet */}
-                    <div className="space-y-2 pt-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-stone-800">Ready-To-Paste Firestore Security Rules:</span>
-                        <button
-                          type="button"
-                          onClick={copyRulesToClipboard}
-                          className="px-2.5 py-1 rounded-lg bg-stone-900 hover:bg-black text-amber-400 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                        >
-                          {copiedRules ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-400" />
-                              <span>Copied!</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3.5 h-3.5" />
-                              <span>Copy Rules</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-
-                      <pre className="p-3.5 bg-stone-900 text-emerald-300 font-mono text-[11px] rounded-2xl overflow-x-auto leading-relaxed border border-stone-800">
-                        {sampleRulesText}
-                      </pre>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {/* TAB 4: ANALYTICS & STATS */}
               {activeTab === 'metrics' && (
                 <div className="space-y-4">
@@ -2927,6 +3156,315 @@ service cloud.firestore {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* OTP VERIFICATION MODAL FOR DELIVERY CONFIRMATION         */}
+        {/* ======================================================== */}
+        {otpVerifyTarget && (
+          <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl border border-stone-200 space-y-4 animate-in fade-in zoom-in duration-200">
+              <div className="flex items-center justify-between border-b border-stone-100 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500 text-stone-950 flex items-center justify-center text-xl font-bold shadow-xs">
+                    🔐
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-stone-900 text-base">Verify Delivery OTP</h4>
+                    <p className="text-xs text-stone-500">Order #{otpVerifyTarget.referenceId}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOtpVerifyTarget(null);
+                    setEnteredOtp('');
+                    setOtpVerifyError(null);
+                  }}
+                  className="w-8 h-8 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-600 flex items-center justify-center font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-stone-50 border border-stone-200/80 text-xs space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-stone-500">Customer:</span>
+                  <span className="font-bold text-stone-900">{otpVerifyTarget.userName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-stone-500">Phone:</span>
+                  <span className="font-mono font-semibold text-stone-800">{otpVerifyTarget.userPhone}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-stone-500">Order Amount:</span>
+                  <span className="font-extrabold text-emerald-800">{otpVerifyTarget.guests}</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-stone-800 uppercase tracking-wider">
+                    Enter 4-Digit Customer OTP:
+                  </label>
+                  <button
+                    type="button"
+                    disabled={isSendingArrivalOtp === (otpVerifyTarget.id || otpVerifyTarget.referenceId)}
+                    onClick={() => handleSendArrivalWhatsApp(otpVerifyTarget, true)}
+                    className="text-xs text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50 transition-colors"
+                    title="Resend a new different 4-digit OTP to customer on WhatsApp"
+                  >
+                    {isSendingArrivalOtp === (otpVerifyTarget.id || otpVerifyTarget.referenceId) ? (
+                      <div className="w-3 h-3 border-2 border-emerald-600/30 border-t-emerald-600 rounded-full animate-spin" />
+                    ) : (
+                      <WhatsAppIcon className="w-3.5 h-3.5 fill-current text-emerald-600" />
+                    )}
+                    <span>
+                      {isSendingArrivalOtp === (otpVerifyTarget.id || otpVerifyTarget.referenceId)
+                        ? 'Resending OTP...'
+                        : 'Resend OTP to Customer'}
+                    </span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={enteredOtp}
+                  onChange={(e) => {
+                    setEnteredOtp(e.target.value);
+                    if (otpVerifyError) setOtpVerifyError(null);
+                  }}
+                  placeholder="e.g. 4821"
+                  className="w-full text-center text-2xl tracking-widest font-mono font-black px-4 py-3 rounded-2xl border-2 border-stone-300 focus:border-amber-500 focus:outline-none bg-stone-50 focus:bg-white"
+                  autoFocus
+                />
+                <p className="text-[11px] text-stone-500 text-center">
+                  Ask customer for the 4-digit verification code received on their WhatsApp.
+                </p>
+                {otpVerifyError && (
+                  <p className="text-xs text-rose-600 font-semibold bg-rose-50 p-2.5 rounded-xl border border-rose-200">
+                    {otpVerifyError}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isVerifyingOtp || !enteredOtp.trim()}
+                  onClick={() => handleVerifyOtpSubmit(false)}
+                  className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all active:scale-[0.98]"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{isVerifyingOtp ? 'Verifying OTP...' : 'Verify OTP & Complete Delivery'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isVerifyingOtp}
+                  onClick={() => handleVerifyOtpSubmit(true)}
+                  className="w-full py-2 rounded-xl text-stone-500 hover:text-stone-800 hover:bg-stone-100 text-xs font-semibold cursor-pointer"
+                  title="Override OTP if customer is unable to check SMS/WhatsApp"
+                >
+                  Rider Override (Customer Phone Unreachable)
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* KITCHEN ORDER TICKET (KOT) / SLIP MODAL                  */}
+        {/* ======================================================== */}
+        {viewingKitchenSlipOrder && (
+          <div className="fixed inset-0 z-60 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+            <div className="bg-white w-full max-w-lg rounded-3xl p-5 sm:p-6 shadow-2xl border border-stone-200 space-y-4 max-h-[92vh] flex flex-col text-stone-900">
+              {/* Slip Modal Header */}
+              <div className="flex items-center justify-between border-b border-stone-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-400 text-stone-950 flex items-center justify-center font-bold shadow-xs">
+                    <Receipt className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-stone-900 text-base">Kitchen Slip (KOT)</h4>
+                    <p className="text-xs text-stone-500">Order #{viewingKitchenSlipOrder.referenceId}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingKitchenSlipOrder(null)}
+                  className="w-8 h-8 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-600 flex items-center justify-center font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Thermal Slip Styled Receipt Body */}
+              <div
+                id="printable-kitchen-slip"
+                className="overflow-y-auto p-4 sm:p-5 rounded-2xl bg-stone-50 border-2 border-dashed border-stone-300 font-mono text-xs space-y-3 shadow-inner"
+              >
+                <div className="text-center pb-2 border-b border-dashed border-stone-400 space-y-1">
+                  <div className="text-base font-black tracking-wider uppercase text-stone-900">
+                    {RESTAURANT_INFO.name}
+                  </div>
+                  <div className="text-[11px] font-bold text-stone-600 uppercase">
+                    *** KITCHEN ORDER TICKET (KOT) ***
+                  </div>
+                  <div className="text-[10px] text-stone-500">
+                    {RESTAURANT_INFO.address.landmark}, {RESTAURANT_INFO.address.area} • Ph: {RESTAURANT_INFO.phone}
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-[11px] border-b border-dashed border-stone-400 pb-2">
+                  <div className="flex justify-between">
+                    <span className="text-stone-500">KOT REF:</span>
+                    <span className="font-bold text-stone-900">#{viewingKitchenSlipOrder.referenceId}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-stone-500">ORDER TYPE:</span>
+                    <span className="font-bold text-stone-900 uppercase">
+                      {viewingKitchenSlipOrder.serviceType.toLowerCase().includes('takeaway')
+                        ? '🥡 Takeaway (Parcel)'
+                        : '🛵 Home Delivery'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-stone-500">MODE OF PAYMENT:</span>
+                    <span className="font-bold text-stone-900 uppercase">
+                      {viewingKitchenSlipOrder.paymentMethod === 'Cash on Delivery'
+                        ? 'Cash on Delivery (COD)'
+                        : viewingKitchenSlipOrder.paymentMethod === 'Cash'
+                        ? 'Cash'
+                        : viewingKitchenSlipOrder.paymentAppUsed
+                        ? `UPI (${viewingKitchenSlipOrder.paymentAppUsed.toUpperCase()})`
+                        : viewingKitchenSlipOrder.paymentStatus === 'Paid'
+                        ? 'Online UPI'
+                        : viewingKitchenSlipOrder.paymentMethod || 'Pay on Delivery'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-stone-500">ORDER PLACED TIME:</span>
+                    <span className="font-bold text-stone-900">
+                      {new Date(viewingKitchenSlipOrder.createdAt).toLocaleTimeString('en-IN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: true,
+                      })}, {new Date(viewingKitchenSlipOrder.createdAt).toLocaleDateString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-stone-500">SLOT / ETA:</span>
+                    <span className="font-bold text-stone-900">{viewingKitchenSlipOrder.timeSlot}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-stone-500">CUSTOMER:</span>
+                    <span className="font-bold text-stone-900">
+                      {viewingKitchenSlipOrder.userName} ({viewingKitchenSlipOrder.userPhone})
+                    </span>
+                  </div>
+                  {!viewingKitchenSlipOrder.serviceType.toLowerCase().includes('takeaway') &&
+                    extractDeliveryAddress(viewingKitchenSlipOrder.notes) && (
+                      <div className="pt-1">
+                        <span className="text-stone-500 block">DELIVER TO:</span>
+                        <span className="font-bold text-stone-900 block pl-1">
+                          {extractDeliveryAddress(viewingKitchenSlipOrder.notes)}
+                        </span>
+                      </div>
+                    )}
+                </div>
+
+                {/* Items */}
+                <div className="space-y-1.5 border-b border-dashed border-stone-400 pb-2">
+                  <div className="font-bold text-stone-700 text-[11px] uppercase tracking-wide">
+                    ITEMS TO PREPARE:
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-white border border-stone-200 text-stone-900 font-bold whitespace-pre-line text-xs">
+                    {viewingKitchenSlipOrder.customDish || 'Standard Meal / Custom Order'}
+                  </div>
+                </div>
+
+                {/* Cooking Instructions */}
+                {extractCookingNotes(viewingKitchenSlipOrder.notes) && (
+                  <div className="space-y-1 border-b border-dashed border-stone-400 pb-2">
+                    <span className="font-bold text-amber-900 text-[10px] uppercase">
+                      ⚠️ SPECIAL KITCHEN INSTRUCTIONS:
+                    </span>
+                    <p className="text-stone-800 font-semibold text-[11px] bg-amber-50 p-2 rounded border border-amber-200">
+                      {extractCookingNotes(viewingKitchenSlipOrder.notes)}
+                    </p>
+                  </div>
+                )}
+
+                {/* Payment Breakdown with PAYEE */}
+                <div className="space-y-1 text-[11px] border-b border-dashed border-stone-400 pb-2">
+                  {viewingKitchenSlipOrder.paymentUtr && (
+                    <div className="flex justify-between">
+                      <span className="text-stone-500">UPI REF / UTR:</span>
+                      <span className="font-mono font-bold text-stone-900">{viewingKitchenSlipOrder.paymentUtr}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between bg-emerald-50/80 p-1.5 rounded border border-emerald-200">
+                    <span className="text-emerald-950 font-bold">PAYEE NAME:</span>
+                    <span className="font-black text-emerald-900 uppercase">{RESTAURANT_INFO.name}</span>
+                  </div>
+                  <div className="flex justify-between pt-1 font-bold text-sm text-stone-900">
+                    <span>BILL AMOUNT:</span>
+                    <span className="text-emerald-700">{viewingKitchenSlipOrder.guests || 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-stone-500">ORDER STATUS:</span>
+                    <span className="font-bold text-stone-800 uppercase">{viewingKitchenSlipOrder.status}</span>
+                  </div>
+                </div>
+
+                <div className="text-center text-[10px] text-stone-400 pt-1">
+                  Thank You • Fresh Pure Veg Food from {RESTAURANT_INFO.name}
+                </div>
+              </div>
+
+              {/* Actions Footer */}
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleCopyKOT(viewingKitchenSlipOrder);
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Copy className="w-4 h-4 text-stone-600" />
+                  <span>
+                    {copiedKOTId === (viewingKitchenSlipOrder.id || viewingKitchenSlipOrder.referenceId)
+                      ? 'KOT Copied! ✓'
+                      : 'Copy KOT Slip'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.print();
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Print Slip</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setViewingKitchenSlipOrder(null)}
+                  className="px-4 py-2.5 rounded-xl bg-stone-200 hover:bg-stone-300 text-stone-800 text-xs font-bold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         )}

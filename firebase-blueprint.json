@@ -18,21 +18,32 @@
     },
     "Booking": {
       "title": "Booking",
-      "description": "Table reservation and parcel order inquiries for Vegies Restro",
+      "description": "Table reservation and food parcel orders for Vegies Restro",
       "type": "object",
       "properties": {
         "userId": { "type": "string", "description": "Customer UID or guest identifier" },
         "userName": { "type": "string", "description": "Customer name" },
         "userPhone": { "type": "string", "description": "Customer contact number" },
         "userEmail": { "type": "string", "description": "Customer email address" },
-        "serviceType": { "type": "string", "description": "Category of dining service" },
-        "guests": { "type": "string", "description": "Number of guests or party size" },
-        "timeSlot": { "type": "string", "description": "Selected meal time window" },
-        "customDish": { "type": "string", "description": "Custom dishes or ordered items" },
-        "notes": { "type": "string", "description": "Special dietary or seating instructions" },
+        "serviceType": { "type": "string", "description": "Category of dining service or food order" },
+        "guests": { "type": "string", "description": "Number of guests or items count" },
+        "timeSlot": { "type": "string", "description": "Selected meal time window or ETA" },
+        "customDish": { "type": "string", "description": "Custom dishes or ordered items list" },
+        "notes": { "type": "string", "description": "Special dietary, delivery address, or seating instructions" },
         "referenceId": { "type": "string", "description": "Unique booking reference code" },
-        "status": { "type": "string", "enum": ["Pending", "Confirmed", "Completed", "Cancelled"] },
-        "createdAt": { "type": "string", "description": "ISO timestamp of submission" }
+        "status": { "type": "string", "enum": ["Pending", "Confirmed", "Preparing", "Out for Delivery", "Delivered", "Completed", "Cancelled"] },
+        "paymentStatus": { "type": "string", "enum": ["Pending", "Paid", "Verification Pending", "Failed"] },
+        "paymentMethod": { "type": "string" },
+        "paymentAmount": { "type": "number" },
+        "paymentUpiId": { "type": "string" },
+        "paymentPayee": { "type": "string" },
+        "paymentUtr": { "type": "string" },
+        "paymentAppUsed": { "type": "string" },
+        "paymentPaidAt": { "type": "string" },
+        "deliveryOtp": { "type": "string", "description": "4-digit OTP generated for delivery confirmation verification" },
+        "otpVerified": { "type": "boolean", "description": "Whether the delivery OTP has been verified upon delivery" },
+        "createdAt": { "type": "string", "description": "ISO timestamp of submission" },
+        "updatedAt": { "type": "string" }
       },
       "required": ["userName", "userPhone", "serviceType", "timeSlot", "status", "referenceId"]
     }
@@ -44,7 +55,7 @@
     },
     "/bookings/{bookingId}": {
       "schema": "Booking",
-      "description": "Public and user reservations for restaurant management"
+      "description": "Public and user reservations and food orders for restaurant management"
     }
   }
 }

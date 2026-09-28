@@ -58,6 +58,14 @@ export const formatStatusWhatsAppMessage = (
         if (booking.guests) {
           text += `🔹 Total: ${booking.guests}\n`;
         }
+        if (booking.paymentStatus === 'Paid') {
+          text += `💳 Payment: PAID via UPI (${booking.paymentAppUsed || 'Kotak 811'}${booking.paymentUtr ? ` • UTR: ${booking.paymentUtr}` : ''})\n`;
+        } else {
+          text += `💵 Payment: Cash on Delivery\n`;
+        }
+        if (booking.deliveryOtp) {
+          text += `🔐 Delivery Verification: 4-digit confirmation OTP will be sent directly via WhatsApp to your phone upon the arrival of our delivery boy.\n`;
+        }
         if (customNote || booking.notes) {
           text += `🔹 Details: ${customNote || booking.notes}\n`;
         }
@@ -109,6 +117,9 @@ export const formatStatusWhatsAppMessage = (
       } else {
         text += `🛵 Your food order #${refId} is OUT FOR DELIVERY! 📦✨\n\n`;
         text += `Our delivery rider is on the way with your hot & fresh meal.\n`;
+        if (booking.deliveryOtp) {
+          text += `🔐 Delivery Confirmation OTP will be sent directly to your WhatsApp as soon as the delivery boy arrives at your doorstep.\n`;
+        }
         if (customNote) {
           text += `📝 Delivery Note: ${customNote}\n`;
         }
@@ -125,9 +136,12 @@ export const formatStatusWhatsAppMessage = (
     case 'Completed': {
       let text = `${greeting}\n\n`;
       if (isFoodOrder) {
-        text += `🌟 Your food order #${refId} has been DELIVERED! 🍽️😋\n\n`;
-        text += `Thank you for ordering from Vegies Restro. We hope you love the taste & quality! 🥗🙏✨\n\n`;
-        text += `Please don't forget to visit us or order again soon!\n\n`;
+        text += `🌟 Great news! Your food order #${refId} has been successfully DELIVERED! 🍽️😋✨\n\n`;
+        if (booking.otpVerified) {
+          text += `✅ Delivery confirmed & verified via OTP.\n`;
+        }
+        text += `Thank you for ordering from Vegies Restro Pure Veg! We hope you loved your fresh meal. 🥗🙏\n\n`;
+        text += `Please visit us again or order online anytime!\n\n`;
       } else {
         text += `🌟 Thank you for dining at Vegies Restro! 🍽️✨\n\n`;
         text += `We hope you loved your food and had a wonderful time. We look forward to welcoming you back soon! 🥗🙏😊\n\n`;
@@ -162,6 +176,14 @@ export const formatStatusWhatsAppMessage = (
       return text;
     }
   }
+};
+
+/**
+ * Check whether WhatsApp auto-message should be sent.
+ * Per specification: Messages are sent ONLY on Order Confirmation and Delivery Confirmation, not on intermediate progress steps.
+ */
+export const shouldTriggerWhatsAppForStatus = (status: BookingInquiry['status']): boolean => {
+  return status === 'Confirmed' || status === 'Delivered' || status === 'Completed';
 };
 
 /**
@@ -305,6 +327,73 @@ export const getWhatsAppDispatchLogs = (): WhatsAppDispatchRecord[] => {
 };
 
 /**
+ * Format dedicated WhatsApp message containing the Doorstep Confirmation OTP directly to customer
+ */
+export const formatDeliveryBoyArrivalWhatsAppOtp = (order: BookingInquiry): string => {
+  const customerName = order.userName?.trim() || 'Customer';
+  const refId = order.referenceId || 'VR-ORDER';
+  const otp = order.deliveryOtp || '----';
+  const isResent = Boolean(order.otpSentCount && order.otpSentCount > 1);
+
+  let text = isResent
+    ? `🔄 *VEGIES RESTRO - NEW RESENT DELIVERY OTP!* 🥗✨\n\n`
+    : `🛵 *VEGIES RESTRO - RIDER AT DOORSTEP!* 🥗✨\n\n`;
+
+  text += `Hello *${customerName}*,\n`;
+  if (isResent) {
+    text += `A new, updated delivery verification OTP has been generated for order *#${refId}*!\n\n`;
+    text += `🔐 *YOUR NEW DOORSTEP DELIVERY OTP:*\n`;
+    text += `👉 *${otp}* 👈\n\n`;
+    text += `⚠️ *Note:* This new code *${otp}* replaces any earlier OTP. Please share this new code with our delivery boy.\n\n`;
+  } else {
+    text += `Our delivery partner has arrived at your doorstep with your hot & fresh pure veg meal for order *#${refId}*!\n\n`;
+    text += `🔐 *YOUR DOORSTEP DELIVERY OTP:*\n`;
+    text += `👉 *${otp}* 👈\n\n`;
+    text += `Please share this 4-digit code *${otp}* with our delivery boy to safely receive and verify your order.\n\n`;
+  }
+  if (order.customDish) {
+    text += `🍲 Items: ${order.customDish}\n`;
+  }
+  if (order.guests) {
+    text += `💰 Bill Amount: ${order.guests}\n`;
+  }
+  text += `\n🍽️ *Enjoy your delicious pure veg food!* 😋✨\n`;
+  text += `📍 Vegies Restro, Near Santosh Bhuvan, Nalasopara (E)\n`;
+  text += `📞 Helpline: +91 ${RESTAURANT_INFO.phone}`;
+  return text;
+};
+
+/**
+ * Send WhatsApp OTP directly to customer upon delivery boy arrival
+ */
+export const triggerDeliveryArrivalWhatsApp = async (
+  order: BookingInquiry
+): Promise<{ success: boolean; message: string; otp: string }> => {
+  const messageText = formatDeliveryBoyArrivalWhatsAppOtp(order);
+  const isResent = Boolean(order.otpSentCount && order.otpSentCount > 1);
+
+  // Trigger WhatsApp directly to customer phone number
+  triggerWhatsAppChat(order.userPhone, messageText);
+
+  // Also log into WhatsApp dispatch logs
+  await sendWhatsAppDirectInBackground(
+    order,
+    order.status,
+    isResent
+      ? `🔄 Resent new Doorstep WhatsApp OTP (${order.deliveryOtp}) to customer`
+      : `🛵 Doorstep WhatsApp OTP (${order.deliveryOtp}) sent to customer on delivery boy arrival`
+  );
+
+  return {
+    success: true,
+    message: isResent
+      ? `New Doorstep WhatsApp OTP (${order.deliveryOtp}) resent to ${order.userPhone}`
+      : `WhatsApp OTP message dispatched to ${order.userPhone}`,
+    otp: order.deliveryOtp || '',
+  };
+};
+
+/**
  * Clear dispatch logs
  */
 export const clearWhatsAppDispatchLogs = (): void => {
@@ -314,3 +403,4 @@ export const clearWhatsAppDispatchLogs = (): void => {
     console.error(e);
   }
 };
+

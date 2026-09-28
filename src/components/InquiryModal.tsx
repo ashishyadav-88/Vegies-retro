@@ -234,7 +234,24 @@ export const InquiryModal: React.FC<InquiryModalProps> = ({
                   <span className="font-bold text-stone-800">{submittedBooking.guests}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-stone-500">Time:</span>
+                  <span className="text-stone-500">Booking Time:</span>
+                  <span className="font-bold text-stone-800 flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>
+                      {new Date(submittedBooking.createdAt || Date.now()).toLocaleTimeString('en-IN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: true,
+                      })}, {new Date(submittedBooking.createdAt || Date.now()).toLocaleDateString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-stone-500">Reserved Slot:</span>
                   <span className="font-bold text-stone-800">{submittedBooking.timeSlot}</span>
                 </div>
                 {submittedBooking.customDish && (

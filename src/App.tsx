@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
@@ -172,6 +172,7 @@ function MainApp() {
         isOpen={isUserBookingsOpen}
         onClose={() => setIsUserBookingsOpen(false)}
         onOpenNewInquiry={() => handleOpenInquiry('Dine-In Table Reservation')}
+        onOpenOrderFood={() => handleOpenOrderFood('all')}
       />
 
       {/* Admin Management Portal Modal */}
@@ -184,6 +185,16 @@ function MainApp() {
 }
 
 export default function App() {
+  useEffect(() => {
+    // Ensure light mode is strictly enforced and previous theme keys are cleared
+    document.documentElement.classList.remove('dark');
+    try {
+      localStorage.removeItem('restaurant_global_theme');
+    } catch {
+      // Ignore
+    }
+  }, []);
+
   return (
     <AuthProvider>
       <MainApp />

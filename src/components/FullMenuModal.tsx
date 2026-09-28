@@ -12,6 +12,7 @@ import {
   Flame,
   Printer,
   ChevronDown,
+  Truck,
 } from 'lucide-react';
 
 interface FullMenuModalProps {
@@ -174,11 +175,16 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
                             <span className="font-bold text-white text-sm">
                               {item.name}
                             </span>
-                            {item.isChefSpecial && (
+                            {item.id === 'starter-1' || item.name.toLowerCase().includes('paneer tikka') ? (
+                              <span className="text-[9px] font-bold bg-emerald-600/30 text-emerald-300 border border-emerald-500/50 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                                <Truck className="w-2.5 h-2.5" />
+                                Free Delivery
+                              </span>
+                            ) : item.isChefSpecial ? (
                               <span className="text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.2 rounded">
                                 Special
                               </span>
-                            )}
+                            ) : null}
                           </div>
                           <p className="text-xs text-stone-400 mt-1 leading-relaxed">
                             {item.description}
@@ -222,6 +228,16 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
                       <span className="font-bold text-white text-sm">
                         {item.name}
                       </span>
+                      {item.id === 'starter-1' || item.name.toLowerCase().includes('paneer tikka') ? (
+                        <span className="text-[9px] font-bold bg-emerald-600/30 text-emerald-300 border border-emerald-500/50 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                          <Truck className="w-2.5 h-2.5" />
+                          Free Delivery
+                        </span>
+                      ) : item.isChefSpecial ? (
+                        <span className="text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.2 rounded">
+                          Special
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-xs text-stone-400 mt-1 leading-relaxed">
                       {item.description}

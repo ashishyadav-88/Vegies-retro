@@ -54,7 +54,7 @@ export const GALLERY_DATA: GalleryItem[] = [
     id: 'gal-8',
     title: 'Traditional Gulab Jamun & Ice Cream',
     category: 'Desserts',
-    image: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=1000&q=80',
+    image: 'https://images.unsplash.com/photo-1590080875515-8a3a8dc5735e?auto=format&fit=crop&w=1000&q=80',
     alt: 'Warm gulab jamun in sweet syrup with rich vanilla ice cream',
   },
   {

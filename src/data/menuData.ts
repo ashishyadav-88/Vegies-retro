@@ -66,11 +66,11 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Paneer Tikka Platter',
     category: 'starters',
     description: 'Tender cottage cheese cubes marinated in tandoori spices, char-grilled with bell peppers and onions.',
-    price: '₹220',
+    price: '₹1',
     isVegetarian: true,
     isPopular: true,
     spiceLevel: 'Medium',
-    image: 'https://images.unsplash.com/photo-1599488615731-7e5c2823ff28?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?auto=format&fit=crop&w=800&q=80',
   },
   {
     id: 'starter-2',
@@ -80,7 +80,7 @@ export const MENU_ITEMS: MenuItem[] = [
     price: '₹160',
     isVegetarian: true,
     spiceLevel: 'Mild',
-    image: 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1548869206-93b036288d7e?auto=format&fit=crop&w=800&q=80',
   },
   {
     id: 'starter-3',
@@ -90,7 +90,7 @@ export const MENU_ITEMS: MenuItem[] = [
     price: '₹180',
     isVegetarian: true,
     spiceLevel: 'Mild',
-    image: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1541544741938-0af808871cc0?auto=format&fit=crop&w=800&q=80',
   },
   {
     id: 'starter-4',
@@ -101,7 +101,7 @@ export const MENU_ITEMS: MenuItem[] = [
     isVegetarian: true,
     isPopular: true,
     spiceLevel: 'Mild',
-    image: 'https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1541529086526-db283c563270?auto=format&fit=crop&w=800&q=80',
   },
 
   // Main Course
@@ -181,7 +181,7 @@ export const MENU_ITEMS: MenuItem[] = [
     price: '₹60',
     isVegetarian: true,
     spiceLevel: 'Mild',
-    image: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=800&q=80',
   },
   {
     id: 'ind-4',
@@ -191,7 +191,7 @@ export const MENU_ITEMS: MenuItem[] = [
     price: '₹170',
     isVegetarian: true,
     spiceLevel: 'Medium',
-    image: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1645177628172-a94c1f96e6db?auto=format&fit=crop&w=800&q=80',
   },
 
   // Chinese Food
@@ -215,7 +215,7 @@ export const MENU_ITEMS: MenuItem[] = [
     isVegetarian: true,
     isPopular: true,
     spiceLevel: 'Medium',
-    image: 'https://images.unsplash.com/photo-1525755662778-989d0524087e?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&w=800&q=80',
   },
   {
     id: 'chn-3',
@@ -236,7 +236,7 @@ export const MENU_ITEMS: MenuItem[] = [
     isVegetarian: true,
     isChefSpecial: true,
     spiceLevel: 'Spicy',
-    image: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1541832676-9b763b0239ab?auto=format&fit=crop&w=800&q=80',
   },
 
   // Snacks
@@ -323,7 +323,7 @@ export const MENU_ITEMS: MenuItem[] = [
     price: '₹40',
     isVegetarian: true,
     spiceLevel: 'Mild',
-    image: 'https://images.unsplash.com/photo-1517256064527-09c73fc73e38?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1576092768241-dec231879fc3?auto=format&fit=crop&w=800&q=80',
   },
 
   // Desserts
@@ -336,7 +336,7 @@ export const MENU_ITEMS: MenuItem[] = [
     isVegetarian: true,
     isPopular: true,
     spiceLevel: 'Mild',
-    image: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1590080875515-8a3a8dc5735e?auto=format&fit=crop&w=800&q=80',
   },
   {
     id: 'des-2',

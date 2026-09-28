@@ -135,16 +135,8 @@ export const subscribeToAllUsers = (callback: (users: UserProfile[]) => void): (
             });
           });
 
-          // Merge with any offline cached users
-          const localUsers = getAdminMasterUsers();
-          const mergedMap = new Map<string, UserProfile>();
-
-          // Add local first
-          localUsers.forEach((u) => mergedMap.set(u.uid, u));
-          // Override/add Firestore official records
-          firestoreUsers.forEach((u) => mergedMap.set(u.uid, u));
-
-          const merged = Array.from(mergedMap.values()).sort(
+          // Firestore is authoritative
+          const merged = firestoreUsers.sort(
             (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           );
 

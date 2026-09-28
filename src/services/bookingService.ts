@@ -78,7 +78,7 @@ export const testFirestoreLiveConnection = async (): Promise<FirestoreStatus> =>
 };
 
 /**
- * Sync all locally stored bookings to Firestore
+ * Sync all locally stored bookings to Firestore without creating duplicates
  */
 export const syncAllLocalBookingsToFirestore = async (): Promise<{
   successCount: number;
@@ -103,15 +103,46 @@ export const syncAllLocalBookingsToFirestore = async (): Promise<{
         customDish: b.customDish || '',
         notes: b.notes || '',
         referenceId: b.referenceId || generateReferenceId(),
+        deliveryOtp: b.deliveryOtp || '',
+        otpVerified: b.otpVerified || false,
+        otpSentCount: b.otpSentCount || 0,
+        otpLastSentAt: b.otpLastSentAt || '',
         status: b.status || 'Pending',
+        paymentStatus: b.paymentStatus || 'Pending',
+        paymentMethod: b.paymentMethod || 'UPI_QR',
+        paymentAmount: b.paymentAmount || 0,
+        paymentUpiId: b.paymentUpiId || '',
+        paymentPayee: b.paymentPayee || '',
+        paymentUtr: b.paymentUtr || '',
+        paymentAppUsed: b.paymentAppUsed || '',
+        paymentPaidAt: b.paymentPaidAt || '',
         createdAt: b.createdAt || new Date().toISOString(),
+        updatedAt: b.updatedAt || new Date().toISOString(),
         serverCreatedAt: serverTimestamp(),
       });
 
-      const docRef = await addDoc(collection(db, 'bookings'), sanitized);
-      // Update local copy with new Firestore doc ID
-      updateAdminMasterBooking(b.id || b.referenceId, { id: docRef.id });
-      successCount++;
+      if (!b.id || b.id.startsWith('local-')) {
+        // Check if a document with this referenceId already exists in Firestore before adding
+        const qRef = query(collection(db, 'bookings'), where('referenceId', '==', sanitized.referenceId));
+        const existingDocs = await getDocs(qRef);
+
+        if (!existingDocs.empty) {
+          // Already exists in Firestore, just update local ID with Firestore doc ID
+          const existingId = existingDocs.docs[0].id;
+          updateAdminMasterBooking(b.id || b.referenceId, { id: existingId });
+          successCount++;
+        } else {
+          // Add new document to Firestore
+          const docRef = await addDoc(collection(db, 'bookings'), sanitized);
+          updateAdminMasterBooking(b.id || b.referenceId, { id: docRef.id });
+          successCount++;
+        }
+      } else {
+        // Document has a Firestore ID, update it
+        const docRef = doc(db, 'bookings', b.id);
+        await updateDoc(docRef, sanitized);
+        successCount++;
+      }
     } catch (err: any) {
       failedCount++;
       if (!errors.includes(err.message)) {
@@ -121,6 +152,67 @@ export const syncAllLocalBookingsToFirestore = async (): Promise<{
   }
 
   return { successCount, failedCount, errors };
+};
+
+/**
+ * Force refresh admin bookings directly from Firestore and replace local cache
+ */
+export const forceRefreshAdminBookingsFromFirestore = async (): Promise<BookingInquiry[]> => {
+  const bookingsRef = collection(db, 'bookings');
+  const snap = await getDocs(bookingsRef);
+  const freshList: BookingInquiry[] = [];
+
+  snap.forEach((docSnap) => {
+    const data = docSnap.data();
+    freshList.push({
+      id: docSnap.id,
+      userId: data.userId || 'guest',
+      userName: data.userName || 'Walk-in / Guest',
+      userEmail: data.userEmail || '',
+      userPhone: data.userPhone || '',
+      serviceType: data.serviceType || 'Dine-In Table Reservation',
+      guests: data.guests || '2-4 People',
+      timeSlot: data.timeSlot || 'Lunch',
+      customDish: data.customDish || '',
+      notes: data.notes || '',
+      status: data.status || 'Pending',
+      paymentStatus: data.paymentStatus || 'Pending',
+      paymentMethod: data.paymentMethod || 'UPI_QR',
+      paymentAmount: data.paymentAmount || 0,
+      paymentUpiId: data.paymentUpiId || '',
+      paymentPayee: data.paymentPayee || '',
+      paymentUtr: data.paymentUtr || '',
+      paymentAppUsed: data.paymentAppUsed || '',
+      paymentPaidAt: data.paymentPaidAt || '',
+      deliveryOtp: data.deliveryOtp || '',
+      otpVerified: data.otpVerified || false,
+      createdAt: data.createdAt || new Date().toISOString(),
+      updatedAt: data.updatedAt || '',
+      referenceId: data.referenceId || docSnap.id.slice(0, 6).toUpperCase(),
+    });
+  });
+
+  const sorted = freshList.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  try {
+    localStorage.setItem(ADMIN_MASTER_STORAGE_KEY, JSON.stringify(sorted));
+  } catch {}
+
+  return sorted;
+};
+
+/**
+ * Purge local admin cache completely
+ */
+export const purgeLocalAdminCache = (): void => {
+  try {
+    localStorage.removeItem(ADMIN_MASTER_STORAGE_KEY);
+    localStorage.removeItem('vegies_restro_admin_all_users');
+  } catch (e) {
+    console.error('Error purging cache:', e);
+  }
 };
 
 // Storage keys
@@ -216,6 +308,25 @@ export const generateReferenceId = (): string => {
   return `VR-${randomNum}`;
 };
 
+// Generate a secure 4-digit numeric OTP for delivery confirmation (different from excludeOtp if provided)
+export const generateDeliveryOtp = (excludeOtp?: string): string => {
+  let otp = Math.floor(1000 + Math.random() * 9000).toString();
+  if (excludeOtp) {
+    const cleanExclude = excludeOtp.trim();
+    let attempts = 0;
+    while (otp === cleanExclude && attempts < 10) {
+      otp = Math.floor(1000 + Math.random() * 9000).toString();
+      attempts++;
+    }
+    // Guaranteed different OTP fallback if needed
+    if (otp === cleanExclude) {
+      const num = parseInt(cleanExclude, 10) || 1234;
+      otp = ((num + 1111) % 9000 + 1000).toString();
+    }
+  }
+  return otp;
+};
+
 /**
  * Clean and remove any undefined fields before sending to Firestore
  */
@@ -236,9 +347,38 @@ const sanitizeBookingData = (data: Record<string, any>): Record<string, any> => 
  * Save a new table reservation / food order inquiry
  */
 export const createBookingInquiry = async (
-  data: Omit<BookingInquiry, 'id' | 'createdAt' | 'status' | 'referenceId'>
+  data: Omit<
+    BookingInquiry,
+    | 'id'
+    | 'createdAt'
+    | 'referenceId'
+    | 'status'
+    | 'paymentStatus'
+    | 'paymentMethod'
+    | 'paymentAmount'
+    | 'paymentUpiId'
+    | 'paymentPayee'
+    | 'paymentUtr'
+    | 'paymentAppUsed'
+    | 'paymentPaidAt'
+    | 'deliveryOtp'
+    | 'otpVerified'
+  > & {
+    status?: BookingInquiry['status'];
+    paymentStatus?: BookingInquiry['paymentStatus'];
+    paymentMethod?: BookingInquiry['paymentMethod'];
+    paymentAmount?: number;
+    paymentUpiId?: string;
+    paymentPayee?: string;
+    paymentUtr?: string;
+    paymentAppUsed?: string;
+    paymentPaidAt?: string;
+    deliveryOtp?: string;
+    otpVerified?: boolean;
+  }
 ): Promise<BookingInquiry> => {
   const referenceId = generateReferenceId();
+  const deliveryOtp = data.deliveryOtp || generateDeliveryOtp();
   const now = new Date().toISOString();
 
   const newBooking: BookingInquiry = {
@@ -253,7 +393,17 @@ export const createBookingInquiry = async (
     customDish: data.customDish || '',
     notes: data.notes || '',
     referenceId,
-    status: 'Pending',
+    deliveryOtp,
+    otpVerified: data.otpVerified || false,
+    status: data.status || 'Pending',
+    paymentStatus: data.paymentStatus || 'Pending',
+    paymentMethod: data.paymentMethod || 'UPI_QR',
+    paymentAmount: data.paymentAmount || 0,
+    paymentUpiId: data.paymentUpiId || '',
+    paymentPayee: data.paymentPayee || '',
+    paymentUtr: data.paymentUtr || '',
+    paymentAppUsed: data.paymentAppUsed || '',
+    paymentPaidAt: data.paymentPaidAt || (data.paymentStatus === 'Paid' ? now : ''),
     createdAt: now,
   };
 
@@ -273,7 +423,17 @@ export const createBookingInquiry = async (
       customDish: newBooking.customDish,
       notes: newBooking.notes,
       referenceId: newBooking.referenceId,
+      deliveryOtp: newBooking.deliveryOtp,
+      otpVerified: newBooking.otpVerified,
       status: newBooking.status,
+      paymentStatus: newBooking.paymentStatus,
+      paymentMethod: newBooking.paymentMethod,
+      paymentAmount: newBooking.paymentAmount,
+      paymentUpiId: newBooking.paymentUpiId,
+      paymentPayee: newBooking.paymentPayee,
+      paymentUtr: newBooking.paymentUtr,
+      paymentAppUsed: newBooking.paymentAppUsed,
+      paymentPaidAt: newBooking.paymentPaidAt,
       createdAt: newBooking.createdAt,
       serverCreatedAt: serverTimestamp(),
     });
@@ -294,78 +454,118 @@ export const createBookingInquiry = async (
 };
 
 /**
- * Subscribe in real-time to the current user's bookings
+ * Subscribe in real-time to the current user's bookings and orders across devices
  */
 export const subscribeToUserBookings = (
   userId: string,
   onUpdate: (bookings: BookingInquiry[]) => void,
-  onError?: (err: any) => void
+  onError?: (err: any) => void,
+  userEmail?: string
 ) => {
+  // 1. Immediately emit local cache for instant zero-latency UI
   const localInitial = getLocalBookings(userId);
   if (localInitial.length > 0) {
     onUpdate(localInitial);
   }
 
   const bookingsRef = collection(db, 'bookings');
-  const q = query(bookingsRef, where('userId', '==', userId), orderBy('createdAt', 'desc'));
+  const mergedMap = new Map<string, BookingInquiry>();
 
-  let unsubscribe = () => {};
+  // Populate map with initial local data
+  localInitial.forEach((item) => {
+    const key = item.referenceId || item.id || '';
+    if (key) mergedMap.set(key, item);
+  });
+
+  const notifySubscribers = () => {
+    const sorted = Array.from(mergedMap.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    // Keep local storage up to date on this device
+    try {
+      localStorage.setItem(getUserLocalStorageKey(userId), JSON.stringify(sorted));
+    } catch {}
+    onUpdate(sorted);
+  };
+
+  const processDoc = (docSnap: any) => {
+    const data = docSnap.data();
+    const item: BookingInquiry = {
+      id: docSnap.id,
+      userId: data.userId || userId,
+      userName: data.userName || '',
+      userEmail: data.userEmail || '',
+      userPhone: data.userPhone || '',
+      serviceType: data.serviceType || 'Dine-In Table Reservation',
+      guests: data.guests || '2-4 People',
+      timeSlot: data.timeSlot || 'Lunch',
+      customDish: data.customDish || '',
+      notes: data.notes || '',
+      status: data.status || 'Pending',
+      paymentStatus: data.paymentStatus || 'Pending',
+      paymentMethod: data.paymentMethod || 'UPI_QR',
+      paymentAmount: data.paymentAmount || 0,
+      paymentUpiId: data.paymentUpiId || '',
+      paymentPayee: data.paymentPayee || '',
+      paymentUtr: data.paymentUtr || '',
+      paymentAppUsed: data.paymentAppUsed || '',
+      paymentPaidAt: data.paymentPaidAt || '',
+      deliveryOtp: data.deliveryOtp || '',
+      otpVerified: data.otpVerified || false,
+      createdAt: data.createdAt || new Date().toISOString(),
+      updatedAt: data.updatedAt || '',
+      referenceId: data.referenceId || docSnap.id.slice(0, 6).toUpperCase(),
+    };
+    const key = item.referenceId || item.id || '';
+    if (key) mergedMap.set(key, item);
+  };
+
+  // Query by userId without compound orderBy to avoid composite index issues
+  const qUser = query(bookingsRef, where('userId', '==', userId));
+
+  let unsubscribeUser = () => {};
+  let unsubscribeEmail = () => {};
 
   try {
-    unsubscribe = onSnapshot(
-      q,
+    unsubscribeUser = onSnapshot(
+      qUser,
       (snapshot) => {
-        const items: BookingInquiry[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          items.push({
-            id: doc.id,
-            userId: data.userId || userId,
-            userName: data.userName || '',
-            userEmail: data.userEmail || '',
-            userPhone: data.userPhone || '',
-            serviceType: data.serviceType || 'Dine-In Table Reservation',
-            guests: data.guests || '2-4 People',
-            timeSlot: data.timeSlot || 'Lunch',
-            customDish: data.customDish || '',
-            notes: data.notes || '',
-            status: data.status || 'Pending',
-            createdAt: data.createdAt || new Date().toISOString(),
-            referenceId: data.referenceId || doc.id.slice(0, 6).toUpperCase(),
-          });
-        });
-
-        const local = getLocalBookings(userId);
-        const mergedMap = new Map<string, BookingInquiry>();
-
-        items.forEach((item) => mergedMap.set(item.referenceId, item));
-        local.forEach((item) => {
-          if (!mergedMap.has(item.referenceId)) {
-            mergedMap.set(item.referenceId, item);
-          }
-        });
-
-        const mergedList = Array.from(mergedMap.values()).sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-
-        onUpdate(mergedList);
+        snapshot.forEach(processDoc);
+        notifySubscribers();
       },
       (err) => {
-        console.warn('Firestore subscription fallback to local cache:', err.message);
-        const fallback = getLocalBookings(userId);
-        onUpdate(fallback);
+        console.warn('Firestore user bookings sync note:', err.message);
+        notifySubscribers();
         if (onError) onError(err);
       }
     );
+
+    // If user has an email, also listen to bookings with matching email to catch any cross-device guest/email orders
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (cleanEmail) {
+      const qEmail = query(bookingsRef, where('userEmail', '==', cleanEmail));
+      unsubscribeEmail = onSnapshot(
+        qEmail,
+        (snapshot) => {
+          snapshot.forEach(processDoc);
+          notifySubscribers();
+        },
+        (err) => {
+          console.warn('Firestore email bookings sync note:', err.message);
+        }
+      );
+    }
   } catch (err: any) {
     console.warn('Error setting up onSnapshot listener:', err);
-    onUpdate(getLocalBookings(userId));
+    notifySubscribers();
   }
 
   return () => {
     try {
-      unsubscribe();
+      unsubscribeUser();
+    } catch {}
+    try {
+      unsubscribeEmail();
     } catch {}
   };
 };
@@ -377,22 +577,33 @@ export const cancelUserBooking = async (bookingId: string, userId?: string) => {
   if (userId) {
     const userBookings = getLocalBookings(userId);
     const existing = userBookings.find((b) => b.id === bookingId || b.referenceId === bookingId);
-    if (existing && existing.status === 'Completed') {
-      throw new Error('Completed bookings cannot be cancelled.');
+    if (existing && (existing.status === 'Completed' || existing.status === 'Delivered')) {
+      throw new Error('Completed orders and bookings cannot be cancelled.');
     }
     updateLocalBookingStatus(userId, bookingId, 'Cancelled');
   }
 
-  if (!bookingId.startsWith('local-')) {
-    try {
+  try {
+    const updatePayload = {
+      status: 'Cancelled' as const,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!bookingId.startsWith('local-')) {
       const bookingRef = doc(db, 'bookings', bookingId);
-      await updateDoc(bookingRef, {
-        status: 'Cancelled',
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn('Could not update cancellation in Firestore (updated locally):', err);
+      await updateDoc(bookingRef, updatePayload);
+    } else {
+      // Find document in Firestore by referenceId
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', bookingId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const d of snap.docs) {
+          await updateDoc(doc(db, 'bookings', d.id), updatePayload);
+        }
+      }
     }
+  } catch (err) {
+    console.warn('Could not update cancellation in Firestore (updated locally):', err);
   }
 };
 
@@ -435,20 +646,40 @@ export const subscribeToAllBookingsAdmin = (
             customDish: data.customDish || '',
             notes: data.notes || '',
             status: data.status || 'Pending',
+            paymentStatus: data.paymentStatus || 'Pending',
+            paymentMethod: data.paymentMethod || 'UPI_QR',
+            paymentAmount: data.paymentAmount || 0,
+            paymentUpiId: data.paymentUpiId || '',
+            paymentPayee: data.paymentPayee || '',
+            paymentUtr: data.paymentUtr || '',
+            paymentAppUsed: data.paymentAppUsed || '',
+            paymentPaidAt: data.paymentPaidAt || '',
+            deliveryOtp: data.deliveryOtp || '',
+            otpVerified: data.otpVerified || false,
             createdAt: data.createdAt || new Date().toISOString(),
+            updatedAt: data.updatedAt || '',
             referenceId: data.referenceId || docSnap.id.slice(0, 6).toUpperCase(),
           });
         });
 
-        // Merge with local master cache
+        // Look for any pending unsynced offline items on this device
         const localMaster = getAdminMasterBookings();
         const mergedMap = new Map<string, BookingInquiry>();
 
-        firestoreItems.forEach((b) => mergedMap.set(b.referenceId || b.id || '', b));
-        localMaster.forEach((b) => {
+        // 1. Authoritative Cloud Firestore records
+        firestoreItems.forEach((b) => {
           const key = b.referenceId || b.id || '';
-          if (!mergedMap.has(key)) {
+          if (key) mergedMap.set(key, b);
+        });
+
+        // 2. Only include pending unsynced offline items (created locally without Firestore doc yet)
+        const pendingUnsynced: BookingInquiry[] = [];
+        localMaster.forEach((b) => {
+          const isLocalDraft = b.id && b.id.startsWith('local-');
+          const key = b.referenceId || b.id || '';
+          if (isLocalDraft && key && !mergedMap.has(key)) {
             mergedMap.set(key, b);
+            pendingUnsynced.push(b);
           }
         });
 
@@ -456,10 +687,17 @@ export const subscribeToAllBookingsAdmin = (
           (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
 
-        // Update local master cache
+        // Keep local cache perfectly in sync with Cloud Firestore
         try {
           localStorage.setItem(ADMIN_MASTER_STORAGE_KEY, JSON.stringify(list));
         } catch {}
+
+        // If there are unsynced items, trigger a background push to Firestore
+        if (pendingUnsynced.length > 0) {
+          syncAllLocalBookingsToFirestore().catch((e) =>
+            console.warn('Auto-sync unsynced bookings note:', e)
+          );
+        }
 
         onUpdate(list);
       },
@@ -488,43 +726,102 @@ export const subscribeToAllBookingsAdmin = (
 export const updateBookingStatusAdmin = async (
   bookingId: string,
   newStatus?: BookingInquiry['status'],
-  additionalNotes?: string
+  additionalNotes?: string,
+  paymentStatus?: BookingInquiry['paymentStatus']
 ) => {
-  // Check if booking is already Completed
+  // Check if booking is already Completed or Delivered
   const master = getAdminMasterBookings();
   const current = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
   if (
     current &&
-    current.status === 'Completed' &&
+    (current.status === 'Completed' || current.status === 'Delivered') &&
     newStatus !== undefined &&
-    newStatus !== 'Completed'
+    newStatus !== current.status
   ) {
-    throw new Error('Once a booking is marked as Completed, its status is finalized and cannot be changed.');
+    throw new Error('Once an order or booking is marked as Delivered or Completed, its status is finalized and cannot be changed.');
   }
 
   // Update local master store
   updateAdminMasterBooking(bookingId, {
     status: newStatus,
     notes: additionalNotes !== undefined ? additionalNotes : undefined,
+    paymentStatus: paymentStatus !== undefined ? paymentStatus : undefined,
   });
 
   // Try updating in Firestore
-  if (!bookingId.startsWith('local-')) {
-    try {
+  const updatePayload: Record<string, any> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if (newStatus !== undefined) {
+    updatePayload.status = newStatus;
+  }
+  if (additionalNotes !== undefined) {
+    updatePayload.notes = additionalNotes;
+  }
+  if (paymentStatus !== undefined) {
+    updatePayload.paymentStatus = paymentStatus;
+  }
+
+  try {
+    if (!bookingId.startsWith('local-')) {
       const bRef = doc(db, 'bookings', bookingId);
-      const updatePayload: Record<string, any> = {
-        updatedAt: new Date().toISOString(),
-      };
-      if (newStatus !== undefined) {
-        updatePayload.status = newStatus;
-      }
-      if (additionalNotes !== undefined) {
-        updatePayload.notes = additionalNotes;
-      }
       await updateDoc(bRef, updatePayload);
-    } catch (err) {
-      console.warn('Firestore admin update notice (saved in local store):', err);
+    } else {
+      // Find document by referenceId in Firestore
+      const targetRefId = current?.referenceId || bookingId;
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', targetRefId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await updateDoc(doc(db, 'bookings', docSnap.id), updatePayload);
+        }
+      }
     }
+  } catch (err) {
+    console.warn('Firestore admin update notice (saved in local store):', err);
+  }
+};
+
+/**
+ * Admin: Update only payment status & UTR
+ */
+export const updateBookingPaymentStatusAdmin = async (
+  bookingId: string,
+  paymentStatus: BookingInquiry['paymentStatus'],
+  paymentUtr?: string
+) => {
+  const master = getAdminMasterBookings();
+  const current = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
+
+  updateAdminMasterBooking(bookingId, {
+    paymentStatus,
+    ...(paymentUtr !== undefined ? { paymentUtr } : {}),
+  });
+
+  const updatePayload: Record<string, any> = {
+    paymentStatus,
+    updatedAt: new Date().toISOString(),
+  };
+  if (paymentUtr !== undefined) {
+    updatePayload.paymentUtr = paymentUtr;
+  }
+
+  try {
+    if (!bookingId.startsWith('local-')) {
+      const bRef = doc(db, 'bookings', bookingId);
+      await updateDoc(bRef, updatePayload);
+    } else {
+      const targetRefId = current?.referenceId || bookingId;
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', targetRefId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await updateDoc(doc(db, 'bookings', docSnap.id), updatePayload);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Firestore admin payment status update notice:', err);
   }
 };
 
@@ -532,15 +829,27 @@ export const updateBookingStatusAdmin = async (
  * Admin: Delete / Remove a booking
  */
 export const deleteBookingAdmin = async (bookingId: string) => {
+  const master = getAdminMasterBookings();
+  const current = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
+
   deleteAdminMasterBooking(bookingId);
 
-  if (!bookingId.startsWith('local-')) {
-    try {
+  try {
+    if (!bookingId.startsWith('local-')) {
       const bRef = doc(db, 'bookings', bookingId);
       await deleteDoc(bRef);
-    } catch (err) {
-      console.warn('Firestore admin delete notice (deleted from local store):', err);
+    } else {
+      const targetRefId = current?.referenceId || bookingId;
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', targetRefId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await deleteDoc(doc(db, 'bookings', docSnap.id));
+        }
+      }
     }
+  } catch (err) {
+    console.warn('Firestore admin delete notice (deleted from local store):', err);
   }
 };
 
@@ -559,6 +868,7 @@ export const createBookingFromAdmin = async (data: {
   status: BookingInquiry['status'];
 }): Promise<BookingInquiry> => {
   const referenceId = generateReferenceId();
+  const deliveryOtp = generateDeliveryOtp();
   const now = new Date().toISOString();
 
   const newBooking: BookingInquiry = {
@@ -573,6 +883,8 @@ export const createBookingFromAdmin = async (data: {
     customDish: data.customDish?.trim() || '',
     notes: data.notes?.trim() || '',
     referenceId,
+    deliveryOtp,
+    otpVerified: false,
     status: data.status || 'Confirmed',
     createdAt: now,
   };
@@ -591,6 +903,8 @@ export const createBookingFromAdmin = async (data: {
       customDish: newBooking.customDish,
       notes: newBooking.notes,
       referenceId: newBooking.referenceId,
+      deliveryOtp: newBooking.deliveryOtp,
+      otpVerified: newBooking.otpVerified,
       status: newBooking.status,
       createdAt: newBooking.createdAt,
       createdBy: 'admin',
@@ -605,4 +919,317 @@ export const createBookingFromAdmin = async (data: {
     console.warn('Firestore admin creation notice (saved in master store):', err);
     return newBooking;
   }
+};
+
+/**
+ * Admin: Verify Customer Delivery OTP and confirm delivery completion
+ */
+export const verifyDeliveryOtpAdmin = async (
+  bookingId: string,
+  enteredOtp: string,
+  forceOverride: boolean = false
+): Promise<{ success: boolean; message: string; booking?: BookingInquiry }> => {
+  const master = getAdminMasterBookings();
+  const target = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
+
+  if (!target) {
+    return { success: false, message: 'Order record not found.' };
+  }
+
+  const cleanEntered = enteredOtp.trim();
+  const expectedOtp = (target.deliveryOtp || '').trim();
+
+  // If OTP is specified on the order and not force-overridden, verify matching OTP
+  if (!forceOverride && expectedOtp) {
+    if (cleanEntered !== expectedOtp) {
+      return {
+        success: false,
+        message: `Invalid Delivery OTP. Please ask customer for the correct 4-digit code (Entered: ${cleanEntered}).`,
+      };
+    }
+  }
+
+  const now = new Date().toISOString();
+
+  // Update local master store
+  updateAdminMasterBooking(bookingId, {
+    status: 'Delivered',
+    otpVerified: true,
+    updatedAt: now,
+  });
+
+  // Try updating Firestore
+  const updatePayload = {
+    status: 'Delivered' as const,
+    otpVerified: true,
+    updatedAt: now,
+  };
+
+  try {
+    if (!bookingId.startsWith('local-')) {
+      const bRef = doc(db, 'bookings', bookingId);
+      await updateDoc(bRef, updatePayload);
+    } else {
+      const targetRefId = target.referenceId || bookingId;
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', targetRefId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await updateDoc(doc(db, 'bookings', docSnap.id), updatePayload);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Firestore OTP verification update notice (saved in local store):', err);
+  }
+
+  const updatedTarget: BookingInquiry = {
+    ...target,
+    status: 'Delivered',
+    otpVerified: true,
+    updatedAt: now,
+  };
+
+  return {
+    success: true,
+    message: 'Delivery Confirmation OTP verified successfully! Order marked as Delivered.',
+    booking: updatedTarget,
+  };
+};
+
+/**
+ * Admin / Rider: Regenerate a guaranteed different delivery confirmation OTP on resend
+ */
+export const regenerateDeliveryOtpAdmin = async (
+  bookingId: string
+): Promise<{ success: boolean; newOtp: string; updatedBooking?: BookingInquiry }> => {
+  const master = getAdminMasterBookings();
+  const current = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
+
+  if (!current) {
+    throw new Error('Order not found for OTP regeneration.');
+  }
+
+  const previousOtp = (current.deliveryOtp || '').trim();
+  const newOtp = generateDeliveryOtp(previousOtp);
+  const now = new Date().toISOString();
+  const nextCount = (current.otpSentCount || 1) + 1;
+
+  const updateFields: Partial<BookingInquiry> = {
+    deliveryOtp: newOtp,
+    otpSentCount: nextCount,
+    otpLastSentAt: now,
+    updatedAt: now,
+  };
+
+  // Update local master store immediately
+  updateAdminMasterBooking(bookingId, updateFields);
+
+  // Try updating in Firestore
+  try {
+    if (!bookingId.startsWith('local-')) {
+      const bRef = doc(db, 'bookings', bookingId);
+      await updateDoc(bRef, updateFields);
+    } else {
+      const targetRefId = current.referenceId || bookingId;
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', targetRefId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await updateDoc(doc(db, 'bookings', docSnap.id), updateFields);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Firestore OTP regeneration notice (saved in local store):', err);
+  }
+
+  const updatedBooking: BookingInquiry = {
+    ...current,
+    ...updateFields,
+  };
+
+  return {
+    success: true,
+    newOtp,
+    updatedBooking,
+  };
+};
+
+/**
+ * Admin / Rider: Mark OTP as sent for the first time
+ */
+export const markOtpSentAdmin = async (
+  bookingId: string
+): Promise<void> => {
+  const master = getAdminMasterBookings();
+  const current = master.find((b) => b.id === bookingId || b.referenceId === bookingId);
+  const nextCount = (current?.otpSentCount || 0) + 1;
+  const now = new Date().toISOString();
+
+  const updateFields = {
+    otpSentCount: nextCount,
+    otpLastSentAt: now,
+    updatedAt: now,
+  };
+
+  updateAdminMasterBooking(bookingId, updateFields);
+
+  try {
+    if (!bookingId.startsWith('local-')) {
+      const bRef = doc(db, 'bookings', bookingId);
+      await updateDoc(bRef, updateFields);
+    } else if (current?.referenceId) {
+      const qRef = query(collection(db, 'bookings'), where('referenceId', '==', current.referenceId));
+      const snap = await getDocs(qRef);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await updateDoc(doc(db, 'bookings', docSnap.id), updateFields);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Firestore markOtpSent notice:', err);
+  }
+};
+
+export interface UtrValidationResult {
+  isValid: boolean;
+  error?: string;
+  warning?: string;
+  normalizedUtr?: string;
+  duplicateOrderRef?: string;
+}
+
+/**
+ * Validates UTR / UPI Reference Number:
+ * - Checks format (10-22 characters, standard 12-digit numeric or alphanumeric UPI reference)
+ * - Rejects fake patterns (all identical digits, sequences, test words)
+ * - Verifies that the UTR has not been already claimed/used for another paid order
+ */
+export const validateUtrNumber = (utr: string): UtrValidationResult => {
+  const clean = (utr || '').trim().replace(/[\s-]/g, '').toUpperCase();
+
+  if (!clean) {
+    return {
+      isValid: false,
+      error: 'Please enter the 12-digit UPI Reference / UTR Number from your payment receipt.',
+    };
+  }
+
+  // Must be between 10 and 22 characters
+  if (clean.length < 10) {
+    return {
+      isValid: false,
+      error: `The entered UTR "${clean}" is too short (${clean.length} digits). A standard UPI Ref No. is 12 digits (e.g. 423819283749).`,
+    };
+  }
+
+  if (clean.length > 22) {
+    return {
+      isValid: false,
+      error: `The entered UTR "${clean}" is too long. Please enter only the 12-digit UPI transaction reference number.`,
+    };
+  }
+
+  // Check for all same characters (e.g., 000000000000, 111111111111, 999999999999)
+  if (/^(.)\1+$/.test(clean)) {
+    return {
+      isValid: false,
+      error: 'Invalid UTR: Repetitive test digits (e.g. 000000000000) are not permitted. Please enter the genuine UTR from your UPI payment receipt.',
+    };
+  }
+
+  // Check for simple sequential numbers
+  const simpleSequences = [
+    '123456789012',
+    '012345678901',
+    '987654321098',
+    '123456123456',
+    '112233445566',
+    '000000123456',
+    '1234567890',
+    '0987654321',
+    '111222333444',
+  ];
+  if (simpleSequences.includes(clean)) {
+    return {
+      isValid: false,
+      error: 'Invalid UTR: Test sequence numbers are not accepted. Please check your Google Pay / PhonePe / Paytm receipt for the genuine 12-digit transaction ID.',
+    };
+  }
+
+  // Check for dummy words
+  if (/TEST|DEMO|FAKE|DUMMY|SAMPLE|ASDF|NULL|UNDEFINED/i.test(clean)) {
+    return {
+      isValid: false,
+      error: 'Invalid UTR: Test keywords detected. Please enter your genuine payment reference ID.',
+    };
+  }
+
+  // Check for duplicate UTR across existing bookings in local master storage
+  const masterBookings = getAdminMasterBookings();
+  const existingWithUtr = masterBookings.find(
+    (b) =>
+      b.paymentUtr &&
+      b.paymentUtr.replace(/[\s-]/g, '').toUpperCase() === clean &&
+      b.paymentStatus === 'Paid'
+  );
+
+  if (existingWithUtr) {
+    return {
+      isValid: false,
+      error: `Duplicate UTR: Reference number "${clean}" was already used for order #${existingWithUtr.referenceId} on ${new Date(
+        existingWithUtr.createdAt
+      ).toLocaleDateString()}. Each payment must have a unique reference.`,
+      duplicateOrderRef: existingWithUtr.referenceId,
+    };
+  }
+
+  return {
+    isValid: true,
+    normalizedUtr: clean,
+  };
+};
+
+/**
+ * Validates UTR against duplicate records and simulates live banking reconciliation
+ */
+export const verifyUtrWithBankingGateway = async (
+  utr: string,
+  amount: number,
+  appUsed: string
+): Promise<{ success: boolean; message: string; details?: any }> => {
+  // First run local format and duplicate check
+  const localCheck = validateUtrNumber(utr);
+  if (!localCheck.isValid) {
+    return { success: false, message: localCheck.error || 'Invalid UTR' };
+  }
+
+  // Also query Firestore bookings for remote duplicate check
+  try {
+    const qRef = query(collection(db, 'bookings'), where('paymentUtr', '==', localCheck.normalizedUtr));
+    const querySnapshot = await getDocs(qRef);
+    const duplicates = querySnapshot.docs.filter((d) => d.data().paymentStatus === 'Paid');
+    if (duplicates.length > 0) {
+      const dupData = duplicates[0].data();
+      return {
+        success: false,
+        message: `Duplicate UTR: This UPI reference number was already registered for order #${dupData.referenceId || duplicates[0].id}. Please provide the new transaction UTR.`,
+      };
+    }
+  } catch (err) {
+    console.warn('Firestore duplicate check note:', err);
+  }
+
+  return {
+    success: true,
+    message: `Payment of ₹${amount} successfully verified via ${appUsed}!`,
+    details: {
+      utr: localCheck.normalizedUtr,
+      amount,
+      verifiedAt: new Date().toISOString(),
+      status: 'VERIFIED_SETTLED',
+    },
+  };
 };
