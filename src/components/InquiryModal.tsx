@@ -120,14 +120,6 @@ export const InquiryModal: React.FC<InquiryModalProps> = ({
         (customDish ? `🍲 Selected Dish: ${customDish}\n` : '') +
         (notes ? `📝 Note: ${notes}\n` : '') +
         `\nPlease confirm table/order availability. Thank you! 🙏🥗`;
-
-      // Optional auto-open WhatsApp
-      setTimeout(() => {
-        window.open(
-          `https://wa.me/91${RESTAURANT_INFO.phone}?text=${encodeURIComponent(messageText)}`,
-          '_blank'
-        );
-      }, 700);
     } catch (err: any) {
       console.error('Error saving booking to Firestore:', err);
       setSubmitError(err.message || 'Failed to submit booking. Please try again.');

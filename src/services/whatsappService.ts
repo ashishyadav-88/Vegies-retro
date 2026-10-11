@@ -186,11 +186,12 @@ export const formatStatusWhatsAppMessage = (
 };
 
 /**
- * Check whether WhatsApp auto-message should be sent.
- * Per specification: Messages are sent ONLY on Order Confirmation and Delivery Confirmation, not on intermediate progress steps.
+ * Check whether WhatsApp auto-message should be sent on admin status update.
+ * Per specification: Strictly NO messages on admin status changes (Pending, Confirmed, Preparing, Out for Delivery, Cancelled).
+ * Automatic message is ONLY allowed when order is Delivered (or Completed).
  */
 export const shouldTriggerWhatsAppForStatus = (status: BookingInquiry['status']): boolean => {
-  return status === 'Confirmed' || status === 'Delivered' || status === 'Completed';
+  return status === 'Delivered' || status === 'Completed';
 };
 
 /**
@@ -215,19 +216,19 @@ export const triggerWhatsAppChat = (phone: string, text: string): boolean => {
   const url = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(text)}`;
 
   try {
-    const win = window.open(url, '_blank', 'noopener,noreferrer');
-    if (!win || win.closed || typeof win.closed === 'undefined') {
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (document.body.contains(a)) {
+        document.body.removeChild(a);
+      }
+    }, 200);
   } catch (err) {
-    console.error('Error opening WhatsApp:', err);
-    window.location.href = url;
+    console.error('Error opening WhatsApp (page preserved, no reload):', err);
   }
   return true;
 };

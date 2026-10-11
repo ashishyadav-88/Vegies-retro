@@ -339,13 +339,6 @@ export const OrderFoodModal: React.FC<OrderFoodModalProps> = ({
         `⏰ *Preferred Time:* ${timeSlot}\n` +
         (specialInstructions.trim() ? `📝 *Special Note:* ${specialInstructions.trim()}\n` : '') +
         `\nPlease prepare and confirm order. Thank you! 🥗✨`;
-
-      setTimeout(() => {
-        window.open(
-          `https://wa.me/91${RESTAURANT_INFO.phone}?text=${encodeURIComponent(whatsappText)}`,
-          '_blank'
-        );
-      }, 700);
     } catch (err: any) {
       console.error('Failed to submit food order:', err);
       setSubmitError(err?.message || 'Failed to place food order. Please try again.');
@@ -455,14 +448,6 @@ export const OrderFoodModal: React.FC<OrderFoodModalProps> = ({
         `⏰ *Preferred Time:* ${timeSlot}\n` +
         (specialInstructions.trim() ? `📝 *Special Note:* ${specialInstructions.trim()}\n` : '') +
         `\nOrder is PAID via UPI. Please prepare and dispatch. Thank you! 🥗✨`;
-
-      // Auto trigger WhatsApp
-      setTimeout(() => {
-        window.open(
-          `https://wa.me/91${RESTAURANT_INFO.phone}?text=${encodeURIComponent(whatsappText)}`,
-          '_blank'
-        );
-      }, 700);
     } catch (err: any) {
       console.error('Failed to submit food order:', err);
       setSubmitError(err?.message || 'Failed to place food order. Please try again.');

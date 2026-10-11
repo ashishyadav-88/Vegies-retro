@@ -64,23 +64,20 @@ export const openSmsDirect = (phone: string, text: string): boolean => {
   const smsUrl = `sms:+${phoneWithCountry}${separator}body=${encodeURIComponent(text)}`;
 
   try {
-    const win = window.open(smsUrl, '_blank');
-    if (!win || win.closed || typeof win.closed === 'undefined') {
-      const a = document.createElement('a');
-      a.href = smsUrl;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+    const a = document.createElement('a');
+    a.href = smsUrl;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (document.body.contains(a)) {
+        document.body.removeChild(a);
+      }
+    }, 200);
     return true;
   } catch (err) {
-    console.warn('SMS launcher fallback:', err);
-    try {
-      window.location.href = smsUrl;
-      return true;
-    } catch {
-      return false;
-    }
+    console.warn('SMS launcher notice (page preserved, no reload):', err);
+    return false;
   }
 };
 
