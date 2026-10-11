@@ -140,7 +140,14 @@ export const formatStatusWhatsAppMessage = (
         if (booking.otpVerified) {
           text += `✅ Delivery confirmed & verified via OTP.\n`;
         }
-        text += `Thank you for ordering from Vegies Restro Pure Veg! We hope you loved your fresh meal. 🥗🙏\n\n`;
+        if (booking.paymentStatus === 'Paid') {
+          if (booking.paymentMethod === 'Cash on Delivery') {
+            text += `💵 Payment Status: PAID (Cash on Delivery collected by rider).\n`;
+          } else {
+            text += `💳 Payment Status: PAID (Online UPI Payment).\n`;
+          }
+        }
+        text += `\nThank you for ordering from Vegies Restro Pure Veg! We hope you loved your fresh meal. 🥗🙏\n\n`;
         text += `Please visit us again or order online anytime!\n\n`;
       } else {
         text += `🌟 Thank you for dining at Vegies Restro! 🍽️✨\n\n`;

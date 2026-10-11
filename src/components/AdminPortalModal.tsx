@@ -335,6 +335,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({ isOpen, onCl
   const [isVerifyingOtp, setIsVerifyingOtp] = useState<boolean>(false);
   const [whatsappOtpToast, setWhatsappOtpToast] = useState<{ message: string; phone: string; otp: string } | null>(null);
   const [isSendingArrivalOtp, setIsSendingArrivalOtp] = useState<string | null>(null);
+  const [otpNoticeWarning, setOtpNoticeWarning] = useState<{ orderId: string; message: string } | null>(null);
 
   // Add Booking Form States (Admin end)
   const [newCustName, setNewCustName] = useState('');
@@ -604,12 +605,20 @@ service cloud.firestore {
         return;
       }
 
-      // Prepare updated booking object
+      // Prepare updated booking object with paymentStatus Paid for COD/completed orders
       const updatedBooking: BookingInquiry = res.booking || {
         ...otpVerifyTarget,
         status: 'Delivered',
         otpVerified: true,
+        paymentStatus: 'Paid',
+        paymentMethod: otpVerifyTarget.paymentMethod || 'Cash on Delivery',
+        paymentPaidAt: new Date().toISOString(),
       };
+
+      // Immediately update local React state so "PAID" badge and Delivered status show right away
+      setBookings((prev) =>
+        prev.map((b) => (b.id === bookingId || b.referenceId === bookingId ? updatedBooking : b))
+      );
 
       // Trigger WhatsApp Delivery Confirmation message
       const deliveryMsg = formatStatusWhatsAppMessage(updatedBooking, 'Delivered');
@@ -745,6 +754,12 @@ service cloud.firestore {
         otp: targetOrder.deliveryOtp || '',
       });
       setTimeout(() => setWhatsappOtpToast(null), 6000);
+
+      // Immediately update local React state so "Verify OTP & Deliver" becomes clickable without refresh
+      setBookings((prev) =>
+        prev.map((b) => (b.id === orderId || b.referenceId === orderId ? targetOrder : b))
+      );
+      setOtpNoticeWarning((prev) => (prev?.orderId === orderId ? null : prev));
     } catch (err: any) {
       alert(`Error dispatching arrival WhatsApp OTP: ${err.message}`);
     } finally {
@@ -1658,11 +1673,23 @@ service cloud.firestore {
                                 {/* Payment Status Badge */}
                                 {order.paymentStatus === 'Paid' ? (
                                   <span
-                                    className="px-2.5 py-0.5 rounded-full border border-blue-300 bg-blue-100 text-blue-900 text-[11px] font-extrabold flex items-center gap-1"
-                                    title={`Paid via ${order.paymentAppUsed || 'UPI'} • UTR: ${order.paymentUtr || 'Recorded'} • Payee: ${order.paymentPayee || 'PARVATI DEVI'}`}
+                                    className={`px-2.5 py-0.5 rounded-full border text-[11px] font-extrabold flex items-center gap-1 ${
+                                      order.paymentMethod === 'Cash on Delivery'
+                                        ? 'border-emerald-300 bg-emerald-100 text-emerald-950'
+                                        : 'border-blue-300 bg-blue-100 text-blue-900'
+                                    }`}
+                                    title={
+                                      order.paymentMethod === 'Cash on Delivery'
+                                        ? `Cash on Delivery collected by rider upon doorstep OTP delivery • Status: Paid${order.paymentPaidAt ? ` at ${new Date(order.paymentPaidAt).toLocaleTimeString('en-IN')}` : ''}`
+                                        : `Paid via ${order.paymentAppUsed || 'UPI'} • UTR: ${order.paymentUtr || 'Recorded'} • Payee: ${order.paymentPayee || 'PARVATI DEVI'}`
+                                    }
                                   >
-                                    <ShieldCheck className="w-3 h-3 text-blue-700" />
-                                    <span>PAID {order.paymentAmount ? `₹${order.paymentAmount}` : ''}</span>
+                                    <ShieldCheck className={`w-3 h-3 ${order.paymentMethod === 'Cash on Delivery' ? 'text-emerald-700' : 'text-blue-700'}`} />
+                                    <span>
+                                      {order.paymentMethod === 'Cash on Delivery'
+                                        ? `PAID (COD Collected${order.paymentAmount ? `: ₹${order.paymentAmount}` : ''})`
+                                        : `PAID ${order.paymentAmount ? `₹${order.paymentAmount}` : ''}`}
+                                    </span>
                                     {order.paymentUtr && (
                                       <span className="font-mono font-semibold text-[10px] text-blue-800">
                                         ({order.paymentUtr})
@@ -1670,8 +1697,8 @@ service cloud.firestore {
                                     )}
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-800 text-[10px] font-bold">
-                                    🟡 Payment Pending
+                                  <span className="px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-900 text-[10px] font-bold flex items-center gap-1">
+                                    <span>{order.paymentMethod === 'Cash on Delivery' ? '💵 COD (Pay on Arrival)' : '🟡 Payment Pending'}</span>
                                   </span>
                                 )}
 
@@ -1908,7 +1935,10 @@ service cloud.firestore {
                                       </span>
                                     </div>
                                     <p className="text-[11px] text-emerald-800/90">
-                                      Order has been successfully handed over to customer. Status is finalized and cannot be modified.
+                                      Order handed over to customer.
+                                      {order.paymentMethod === 'Cash on Delivery'
+                                        ? ' 💵 Cash collected by rider on delivery • Payment marked as DONE (Paid).'
+                                        : ' Payment verified & finalized.'}
                                     </p>
                                   </div>
                                 </div>
@@ -2038,34 +2068,59 @@ service cloud.firestore {
                                   )}
 
                                   {/* 5. Delivered / OTP Verification */}
-                                  <button
-                                    type="button"
-                                    disabled={isActionBusy || order.status === 'Delivered' || order.status === 'Completed'}
-                                    onClick={() => {
-                                      if (order.deliveryOtp && !order.otpVerified && order.status !== 'Delivered') {
-                                        setOtpVerifyTarget(order);
-                                        setEnteredOtp('');
-                                        setOtpVerifyError(null);
-                                      } else {
-                                        handleStatusChange(order.id || order.referenceId, 'Delivered', order);
-                                      }
-                                    }}
-                                    className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
-                                      order.status === 'Delivered' || order.status === 'Completed'
-                                        ? 'bg-teal-100 text-teal-900 border border-teal-300 opacity-60 cursor-not-allowed pointer-events-none'
-                                        : 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer active:scale-95'
-                                    }`}
-                                    title="Verify Customer Delivery OTP and mark as Delivered"
-                                  >
-                                    <CheckCircle2 className="w-3.5 h-3.5" />
-                                    <span>
-                                      {order.status === 'Delivered' || order.status === 'Completed'
-                                        ? '✅ Delivered'
-                                        : order.deliveryOtp
-                                        ? '🔐 Verify OTP & Deliver'
-                                        : 'Delivered'}
-                                    </span>
-                                  </button>
+                                  {(() => {
+                                    const isDeliveryWithOtp = !isTakeaway && Boolean(order.deliveryOtp) && !order.otpVerified && order.status !== 'Delivered' && order.status !== 'Completed';
+                                    const hasSentArrivalOtp = Boolean(order.otpSentCount && order.otpSentCount > 0);
+                                    const requiresOtpDispatchFirst = isDeliveryWithOtp && !hasSentArrivalOtp;
+
+                                    return (
+                                      <button
+                                        type="button"
+                                        disabled={isActionBusy || order.status === 'Delivered' || order.status === 'Completed'}
+                                        onClick={() => {
+                                          if (requiresOtpDispatchFirst) {
+                                            setOtpNoticeWarning({
+                                              orderId: order.id || order.referenceId,
+                                              message: 'Please send WhatsApp OTP first! Click "🛵 Send WhatsApp OTP" so the customer receives the 4-digit code on WhatsApp.',
+                                            });
+                                            alert(`⚠️ Please Send WhatsApp OTP First!\n\nYou must click "Send WhatsApp OTP" first to dispatch the 4-digit verification code to the customer on WhatsApp before verifying delivery.`);
+                                            return;
+                                          }
+
+                                          if (order.deliveryOtp && !order.otpVerified && order.status !== 'Delivered') {
+                                            setOtpVerifyTarget(order);
+                                            setEnteredOtp('');
+                                            setOtpVerifyError(null);
+                                          } else {
+                                            handleStatusChange(order.id || order.referenceId, 'Delivered', order);
+                                          }
+                                        }}
+                                        className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs transition-all ${
+                                          order.status === 'Delivered' || order.status === 'Completed'
+                                            ? 'bg-teal-100 text-teal-900 border border-teal-300 opacity-60 cursor-not-allowed pointer-events-none'
+                                            : requiresOtpDispatchFirst
+                                            ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 cursor-pointer active:scale-95'
+                                            : 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer active:scale-95'
+                                        }`}
+                                        title={
+                                          requiresOtpDispatchFirst
+                                            ? "Please click 'Send WhatsApp OTP' first before verifying delivery"
+                                            : "Verify Customer Delivery OTP and mark as Delivered"
+                                        }
+                                      >
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
+                                        <span>
+                                          {order.status === 'Delivered' || order.status === 'Completed'
+                                            ? '✅ Delivered'
+                                            : order.deliveryOtp
+                                            ? requiresOtpDispatchFirst
+                                              ? '🔒 Verify OTP (Send OTP First)'
+                                              : '🔐 Verify OTP & Deliver'
+                                            : 'Delivered'}
+                                        </span>
+                                      </button>
+                                    );
+                                  })()}
 
                                   {/* 6. Cancelled */}
                                   <button
@@ -2084,6 +2139,41 @@ service cloud.firestore {
                                     <span>{order.status === 'Cancelled' ? '✕ Cancelled' : 'Cancel'}</span>
                                   </button>
                                 </div>
+
+                                {/* Prompt / Warning Banner if Send WhatsApp OTP has not been clicked */}
+                                {otpNoticeWarning?.orderId === (order.id || order.referenceId) && (
+                                  <div className="w-full mt-2.5 p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center justify-between gap-2 animate-in fade-in">
+                                    <div className="flex items-center gap-1.5 font-bold">
+                                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                                      <span>{otpNoticeWarning.message}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        disabled={isSendingArrivalOtp === (order.id || order.referenceId)}
+                                        onClick={() => {
+                                          handleSendArrivalWhatsApp(order, false);
+                                        }}
+                                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                                      >
+                                        {isSendingArrivalOtp === (order.id || order.referenceId) ? (
+                                          <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                        ) : (
+                                          <WhatsAppIcon className="w-3 h-3 fill-current" />
+                                        )}
+                                        <span>Send OTP Now</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setOtpNoticeWarning(null)}
+                                        className="text-stone-400 hover:text-stone-700 font-bold text-xs px-1 cursor-pointer"
+                                        title="Dismiss notice"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
@@ -3202,6 +3292,28 @@ service cloud.firestore {
                   <span className="text-stone-500">Order Amount:</span>
                   <span className="font-extrabold text-emerald-800">{otpVerifyTarget.guests}</span>
                 </div>
+                <div className="flex justify-between items-center pt-1 border-t border-stone-200/60">
+                  <span className="text-stone-500">Payment Mode:</span>
+                  <span className="font-bold text-xs">
+                    {otpVerifyTarget.paymentMethod === 'Cash on Delivery' || otpVerifyTarget.paymentStatus !== 'Paid' ? (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-[11px] inline-flex items-center gap-1">
+                        💵 Cash on Delivery (Collect {otpVerifyTarget.guests || 'Payment'})
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 border border-blue-300 font-extrabold text-[11px] inline-flex items-center gap-1">
+                        ✓ Paid via UPI Online
+                      </span>
+                    )}
+                  </span>
+                </div>
+                {(otpVerifyTarget.paymentMethod === 'Cash on Delivery' || otpVerifyTarget.paymentStatus !== 'Paid') && (
+                  <div className="p-2 mt-1 rounded-xl bg-amber-50/90 border border-amber-200 text-[11px] text-amber-900 flex items-center gap-1.5">
+                    <span>💵</span>
+                    <span>
+                      Collect cash payment from customer. As soon as you verify the delivery OTP, payment will automatically be updated to <strong>PAID</strong>.
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -3421,6 +3533,18 @@ service cloud.firestore {
                   <div className="flex justify-between text-[11px]">
                     <span className="text-stone-500">ORDER STATUS:</span>
                     <span className="font-bold text-stone-800 uppercase">{viewingKitchenSlipOrder.status}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-stone-500">PAYMENT STATUS:</span>
+                    <span className={`font-bold uppercase ${
+                      viewingKitchenSlipOrder.paymentStatus === 'Paid' ? 'text-emerald-700' : 'text-amber-700'
+                    }`}>
+                      {viewingKitchenSlipOrder.paymentStatus === 'Paid'
+                        ? viewingKitchenSlipOrder.paymentMethod === 'Cash on Delivery'
+                          ? '✅ PAID (CASH COLLECTED ON DELIVERY)'
+                          : '✅ PAID (ONLINE UPI)'
+                        : '🟡 PAYMENT PENDING (PAY ON ARRIVAL)'}
+                    </span>
                   </div>
                 </div>
 

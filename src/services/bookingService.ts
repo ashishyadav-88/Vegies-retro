@@ -741,11 +741,26 @@ export const updateBookingStatusAdmin = async (
     throw new Error('Once an order or booking is marked as Delivered or Completed, its status is finalized and cannot be changed.');
   }
 
+  const isCodOrPending =
+    current &&
+    (current.paymentMethod === 'Cash on Delivery' ||
+      current.paymentMethod === 'Cash' ||
+      current.paymentStatus !== 'Paid' ||
+      (typeof current.notes === 'string' && /cash on delivery|\bcod\b|pay on pickup/i.test(current.notes)));
+
+  const resolvedPaymentStatus =
+    paymentStatus !== undefined
+      ? paymentStatus
+      : (newStatus === 'Delivered' || newStatus === 'Completed') && isCodOrPending
+      ? 'Paid'
+      : undefined;
+
   // Update local master store
   updateAdminMasterBooking(bookingId, {
     status: newStatus,
     notes: additionalNotes !== undefined ? additionalNotes : undefined,
-    paymentStatus: paymentStatus !== undefined ? paymentStatus : undefined,
+    paymentStatus: resolvedPaymentStatus,
+    ...((newStatus === 'Delivered' || newStatus === 'Completed') && isCodOrPending ? { paymentPaidAt: new Date().toISOString() } : {}),
   });
 
   // Try updating in Firestore
@@ -758,8 +773,11 @@ export const updateBookingStatusAdmin = async (
   if (additionalNotes !== undefined) {
     updatePayload.notes = additionalNotes;
   }
-  if (paymentStatus !== undefined) {
-    updatePayload.paymentStatus = paymentStatus;
+  if (resolvedPaymentStatus !== undefined) {
+    updatePayload.paymentStatus = resolvedPaymentStatus;
+    if ((newStatus === 'Delivered' || newStatus === 'Completed') && isCodOrPending) {
+      updatePayload.paymentPaidAt = new Date().toISOString();
+    }
   }
 
   try {
@@ -951,17 +969,47 @@ export const verifyDeliveryOtpAdmin = async (
 
   const now = new Date().toISOString();
 
+  // If order was Cash on Delivery (or payment was pending upon delivery),
+  // as soon as the rider completes delivery with OTP at doorstep, payment is marked as Paid (collected in cash)!
+  const isCodOrPending =
+    target.paymentMethod === 'Cash on Delivery' ||
+    target.paymentMethod === 'Cash' ||
+    target.paymentStatus !== 'Paid' ||
+    (typeof target.notes === 'string' && /cash on delivery|\bcod\b|pay on pickup/i.test(target.notes));
+
+  const newPaymentStatus = isCodOrPending ? ('Paid' as const) : (target.paymentStatus || 'Paid');
+  const newPaymentMethod = target.paymentMethod || (isCodOrPending ? 'Cash on Delivery' : 'UPI_QR');
+
+  // Detect payment amount if available from guests
+  let detectedAmount = target.paymentAmount;
+  if (!detectedAmount && target.guests) {
+    const numMatch = target.guests.match(/₹?\s*(\d+)/);
+    if (numMatch) {
+      detectedAmount = parseInt(numMatch[1], 10);
+    }
+  }
+
+  const paymentPaidAt = target.paymentPaidAt || now;
+
   // Update local master store
   updateAdminMasterBooking(bookingId, {
     status: 'Delivered',
     otpVerified: true,
+    paymentStatus: newPaymentStatus,
+    paymentMethod: newPaymentMethod,
+    paymentPaidAt,
+    ...(detectedAmount ? { paymentAmount: detectedAmount } : {}),
     updatedAt: now,
   });
 
   // Try updating Firestore
-  const updatePayload = {
+  const updatePayload: Record<string, any> = {
     status: 'Delivered' as const,
     otpVerified: true,
+    paymentStatus: newPaymentStatus,
+    paymentMethod: newPaymentMethod,
+    paymentPaidAt,
+    ...(detectedAmount ? { paymentAmount: detectedAmount } : {}),
     updatedAt: now,
   };
 
@@ -983,16 +1031,41 @@ export const verifyDeliveryOtpAdmin = async (
     console.warn('Firestore OTP verification update notice (saved in local store):', err);
   }
 
+  // Also update customer local storage if userId is present so customer device reflects Paid
+  if (target.userId) {
+    try {
+      const userKey = getUserLocalStorageKey(target.userId);
+      const userRaw = localStorage.getItem(userKey);
+      if (userRaw) {
+        const userList: BookingInquiry[] = JSON.parse(userRaw);
+        const updatedUserList = userList.map((b) =>
+          b.id === target.id || b.referenceId === target.referenceId
+            ? { ...b, ...updatePayload }
+            : b
+        );
+        localStorage.setItem(userKey, JSON.stringify(updatedUserList));
+      }
+    } catch (e) {
+      console.warn('Could not update customer local bookings:', e);
+    }
+  }
+
   const updatedTarget: BookingInquiry = {
     ...target,
     status: 'Delivered',
     otpVerified: true,
+    paymentStatus: newPaymentStatus,
+    paymentMethod: newPaymentMethod,
+    paymentPaidAt,
+    ...(detectedAmount ? { paymentAmount: detectedAmount } : {}),
     updatedAt: now,
   };
 
   return {
     success: true,
-    message: 'Delivery Confirmation OTP verified successfully! Order marked as Delivered.',
+    message: isCodOrPending
+      ? 'Delivery Confirmation OTP verified successfully! Cash collected & payment marked as PAID.'
+      : 'Delivery Confirmation OTP verified successfully! Order marked as Delivered.',
     booking: updatedTarget,
   };
 };

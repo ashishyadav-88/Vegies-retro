@@ -708,16 +708,20 @@ export const UserBookingsModal: React.FC<UserBookingsModalProps> = ({
 
                           <div className="flex items-center gap-2">
                             {item.paymentStatus === 'Paid' ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-100 text-blue-800 border border-blue-200">
-                                💳 Paid {item.paymentAmount ? `₹${item.paymentAmount}` : ''}
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
+                                item.paymentMethod === 'Cash on Delivery'
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : 'bg-blue-100 text-blue-800 border border-blue-200'
+                              }`}>
+                                {item.paymentMethod === 'Cash on Delivery' ? '💵 Cash Paid' : '💳 Paid'} {item.paymentAmount ? `₹${item.paymentAmount}` : ''}
                               </span>
                             ) : item.paymentStatus === 'Verification Pending' ? (
                               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-200">
                                 ⏳ Verifying UPI ₹{item.paymentAmount || ''}
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-stone-100 text-stone-600">
-                                💵 Cash on Delivery / Pending
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                                💵 Cash on Delivery (Pay on Arrival)
                               </span>
                             )}
                             {getStatusBadge(item.status)}
@@ -1003,26 +1007,47 @@ export const UserBookingsModal: React.FC<UserBookingsModalProps> = ({
                           </div>
                         )}
 
-                        {/* UPI Payment Proof Info */}
+                        {/* Payment Confirmation Banner */}
                         {item.paymentStatus === 'Paid' && (
-                          <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-100 text-[11px] flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 text-blue-950">
-                              <DollarSign className="w-3.5 h-3.5 text-blue-700" />
-                              <span className="font-bold">UPI Payment:</span>
-                              <span className="font-mono font-bold bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-900">
-                                ₹{item.paymentAmount || 0} Paid
-                              </span>
-                              {item.paymentUtr && (
-                                <span className="font-mono font-bold bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-900">
-                                  UTR: {item.paymentUtr}
-                                </span>
-                              )}
-                              {item.paymentAppUsed && (
-                                <span className="text-blue-700 font-semibold">({item.paymentAppUsed})</span>
+                          <div className={`p-2.5 rounded-xl border text-[11px] flex flex-wrap items-center justify-between gap-2 ${
+                            item.paymentMethod === 'Cash on Delivery'
+                              ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
+                              : 'bg-blue-50/80 border-blue-100 text-blue-950'
+                          }`}>
+                            <div className="flex items-center gap-1.5">
+                              {item.paymentMethod === 'Cash on Delivery' ? (
+                                <>
+                                  <span className="text-base">💵</span>
+                                  <span className="font-bold">Cash on Delivery:</span>
+                                  <span className="font-mono font-bold bg-white px-2 py-0.5 rounded border border-emerald-200 text-emerald-900">
+                                    {item.paymentAmount ? `₹${item.paymentAmount} Paid` : 'Paid in Cash'}
+                                  </span>
+                                  <span className="text-emerald-700 font-semibold">(Collected on Delivery)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <DollarSign className="w-3.5 h-3.5 text-blue-700" />
+                                  <span className="font-bold">UPI Payment:</span>
+                                  <span className="font-mono font-bold bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-900">
+                                    ₹{item.paymentAmount || 0} Paid
+                                  </span>
+                                  {item.paymentUtr && (
+                                    <span className="font-mono font-bold bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-900">
+                                      UTR: {item.paymentUtr}
+                                    </span>
+                                  )}
+                                  {item.paymentAppUsed && (
+                                    <span className="text-blue-700 font-semibold">({item.paymentAppUsed})</span>
+                                  )}
+                                </>
                               )}
                             </div>
-                            <span className="text-[10px] font-bold text-emerald-700 bg-white px-2.5 py-0.5 rounded-md border border-emerald-200">
-                              Verified Online
+                            <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-md border ${
+                              item.paymentMethod === 'Cash on Delivery'
+                                ? 'text-emerald-800 bg-white border-emerald-300'
+                                : 'text-emerald-700 bg-white border-emerald-200'
+                            }`}>
+                              {item.paymentMethod === 'Cash on Delivery' ? '✓ Cash Received' : 'Verified Online'}
                             </span>
                           </div>
                         )}
